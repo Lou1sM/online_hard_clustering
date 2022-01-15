@@ -4,11 +4,14 @@ import sys
 
 def get_cl_args():
     parser = argparse.ArgumentParser()
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--test','-t',action='store_true')
+    group.add_argument('--semitest','-st',action='store_true')
     parser.add_argument('--batch_size',type=int,default=256)
-    parser.add_argument('--nc1',type=int,default=196)
-    parser.add_argument('--nc2',type=int,default=30)
+    parser.add_argument('--eve',action='store_true')
+    parser.add_argument('--nc1',type=int,default=15)
+    parser.add_argument('--nc2',type=int,default=12)
     parser.add_argument('--nc3',type=int,default=10)
-    parser.add_argument('--test','-t',action='store_true')
     parser.add_argument('--track_counts',action='store_true')
     ARGS = parser.parse_args()
     return ARGS
