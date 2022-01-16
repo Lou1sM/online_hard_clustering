@@ -5,6 +5,7 @@ import torchvision.transforms as transforms
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.distributions import Categorical
 import cl_args
 from pdb import set_trace
 import numpy as np
@@ -28,7 +29,7 @@ class Net(nn.Module):
         return x
 
 class ClusterNet(nn.Module):
-    def __init__(self,nc1,nc2,nc3):
+    def __init__(self,nc1,nc2,nc3,temperature):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 6, 5)
         self.bn1 = nn.BatchNorm2d(6)
@@ -60,15 +61,19 @@ class ClusterNet(nn.Module):
         self.k2_counts = [0]*nc2
         self.k2_counts = torch.zeros(nc2,device='cuda').int()
         self.k3_counts = torch.zeros(nc3,device='cuda').int()
+        self.k3_raw_counts = torch.zeros(nc3,device='cuda').int()
 
         self.act_logits1 = None
         self.act_logits2 = None
         self.act_logits3 = None
 
+        self.temperature = temperature
+
     def reset_scores(self):
         self.k1_counts = [0]*self.nc1
         self.k2_counts = torch.zeros(self.nc2,device='cuda').int()
         self.k3_counts = torch.zeros(self.nc3,device='cuda').int()
+        self.k3_raw_counts = torch.zeros(self.nc3,device='cuda').int()
 
     def forward(self, inp):
         eve_loss = 0
@@ -86,75 +91,33 @@ class ClusterNet(nn.Module):
         if self.training and ARGS.eve:
             eve_loss += open_eve(act3)
             eve_loss.backward(retain_graph=True)
-        l1 = self.get_ng_losses()
-        return outp,l1
+        if ARGS.prob:
+            for a in self.act_logits3.argmax(axis=1):
+                self.k3_raw_counts[a]+=1
+            cluster_loss,assignments = self.assign_keys_probabilistic(3)
+        elif ARGS.ng:
+            cluster_loss,assignments = self.assign_keys_ng(3)
+        elif ARGS.entropy:
+            cluster_loss,assignments = Categorical(self.act_logits3).entropy().mean()
+        return outp,cluster_loss.mean()
 
-    def get_ng_losses(self):
-        l2,a2 = self.assign_keys(2)
-        l3,a3 = self.assign_keys(3)
-        if ARGS.track_counts:
-            for as3 in a3:
-                self.k1_counts[as3] += 1
-        return l2.mean()+l3.mean()
+    def assign_keys_ng(self,layer_num):
+        if layer_num == 1:
+            x,num_keys = self.act_logits1, self.nc1
+            counts = self.k1_counts
+        if layer_num == 2:
+            x,num_keys = self.act_logits2, self.nc2
+            counts = self.k2_counts
+        if layer_num == 3:
+            x,num_keys = self.act_logits3, self.nc3
+            counts = self.k3_counts
+        cost = neural_gas_loss(x,self.temperature)
+        assignments = x.argmax(axis=1)
+        for a in assignments:
+            counts[a] += 1
+        return cost, assignments
 
-    def ng_losses(self):
-        l1 = 0
-        l2 = 0
-        for s in (self.act_logits1,self.act_logits2,self.act_logits3):
-            scores_by_key = s.transpose(0,1).flatten(1)
-            l1 += us_cross_entropy_logits(scores_by_key)
-            l2 += open_eve(scores_by_key)
-        return l1, l2
-
-    def train_epoch(self,trainloader):
-        running_loss = 0.0
-        ng_running_loss = 0.0
-        eve_running_loss = 0.0
-        for i, data in enumerate(trainloader):
-            inputs, labels = data
-            outputs,ng_loss = self(inputs.cuda())
-            unsupervised_loss = ng_loss
-            unsupervised_loss.backward()
-            self.opt.step()
-            self.ng_opt.step()
-            self.opt.zero_grad(); self.ng_opt.zero_grad()
-            if (i+1) % 10 == 0:
-                if ARGS.track_counts:
-                    for k,v in enumerate(self.k3_counts):
-                        if v>0: print(k,v.item())
-                print(f'loss: {running_loss/50:.3f} ng_loss: {ng_running_loss/50:.3f}')
-                running_loss = 0.0
-                ng_running_loss = 0.0
-                eve_running_loss = 0.0
-                self.reset_scores()
-            running_loss += unsupervised_loss.item()
-            ng_running_loss += ng_loss.item()
-            if (self.k1s==0).all() or (self.k2s==0).all() or (self.k3s==0).all(): set_trace()
-
-    def test_epoch(self,testloader):
-        correct = 0
-        total = 0
-        for data in testloader:
-            images, labels = data
-            outputs,ng_loss,eve_loss = self(images.cuda())
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels.cuda()).sum().item()
-        return correct/total
-
-    def test_epoch_unsupervised(self,testloader):
-        self.eval()
-        preds = []
-        for data in testloader:
-            images, labels = data
-            outputs,ng_loss = self(images.cuda())
-            _, predicted = torch.max(outputs.data, 1)
-            preds.append(predicted.cpu().numpy())
-        pred_array = np.concatenate(preds)
-        acc = accuracy(pred_array,np.array(testloader.dataset.targets))
-        return acc
-
-    def assign_keys(self,layer_num):
+    def assign_keys_probabilistic(self,layer_num):
         if layer_num == 1:
             x,num_keys = self.act_logits1, self.nc1
             counts = self.k1_counts
@@ -188,6 +151,63 @@ class ClusterNet(nn.Module):
         assignments_tensor = torch.tensor(assignments,device=x.device)
         assigned_key_order_tensor = torch.tensor(assigned_key_order,device=x.device)
         return -neg_cost_table[assigned_key_order_tensor,assignments_tensor],assignments_tensor
+
+    def train_epoch(self,trainloader):
+        running_loss = 0.0
+        ng_running_loss = 0.0
+        eve_running_loss = 0.0
+        for i, data in enumerate(trainloader):
+            inputs, labels = data
+            outputs,ng_loss = self(inputs.cuda())
+            unsupervised_loss = ng_loss
+            unsupervised_loss.backward()
+            self.opt.step()
+            self.ng_opt.step()
+            self.opt.zero_grad(); self.ng_opt.zero_grad()
+            if (i+1) % 10 == 0:
+                if ARGS.track_counts:
+                    for k,v in enumerate(self.k3_counts):
+                        if v>0: print(k,v.item(),self.k3_raw_counts[k].item())
+                print(f'loss: {running_loss/50:.3f} ng_loss: {ng_running_loss/50:.3f}')
+                running_loss = 0.0
+                ng_running_loss = 0.0
+                eve_running_loss = 0.0
+            self.reset_scores()
+            running_loss += unsupervised_loss.item()
+            ng_running_loss += ng_loss.item()
+            if (self.k1s==0).all() or (self.k2s==0).all() or (self.k3s==0).all(): set_trace()
+
+    def test_epoch(self,testloader):
+        correct = 0
+        total = 0
+        for data in testloader:
+            images, labels = data
+            outputs,ng_loss,eve_loss = self(images.cuda())
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels.cuda()).sum().item()
+        return correct/total
+
+    def test_epoch_unsupervised(self,testloader):
+        self.eval()
+        preds = []
+        for data in testloader:
+            images, labels = data
+            outputs,ng_loss = self(images.cuda())
+            #_, predicted = torch.max(outputs.data, 1)
+            predicted = self.act_logits3.argmax(axis=1)
+            preds.append(predicted.cpu().numpy())
+        pred_array = np.concatenate(preds)
+        acc = accuracy(pred_array,np.array(testloader.dataset.targets))
+        print(label_counts(pred_array))
+        return acc
+
+def neural_gas_loss(v,temp):
+    n_instances, n_clusters = v.shape
+    weightings = (-torch.arange(n_clusters,device=v.device)/temp).exp()
+    sorted_v, _ = torch.sort(v)
+    return (sorted_v**2 * weightings).sum(axis=1)
+
 
 def argmax_coords(t):
     max_val = t.max()
@@ -226,7 +246,9 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=ARGS.batch_size,shu
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 with torch.autograd.set_detect_anomaly(True):
-    cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3).cuda()
-    cluster_net.train_epoch(trainloader)
+    cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3,ARGS.temperature).cuda()
+    for epoch_num in range(1,ARGS.num_epochs+1):
+        cluster_net.temperature = ARGS.temperature/epoch_num
+        cluster_net.train_epoch(trainloader)
     acc = cluster_net.test_epoch_unsupervised(testloader)
 print(f"Cluster net acc is {(100*acc):.2f}")
