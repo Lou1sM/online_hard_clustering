@@ -14,7 +14,6 @@ def get_cl_args():
     train_type_group.add_argument('--no_cluster_loss',action='store_true')
     dset_group = parser.add_mutually_exclusive_group()
     dset_group.add_argument('--ImageNet',action='store_true')
-    dset_group.add_argument('--MNIST',action='store_true')
     dset_group.add_argument('--C100',action='store_true')
     parser.add_argument('--batch_size',type=int,default=256)
     parser.add_argument('--eve',action='store_true')
@@ -28,4 +27,4 @@ def get_cl_args():
     ARGS = parser.parse_args()
     return ARGS
 
-RELEVANT_ARGS = ['ablate_label_filter','clusterer','dset','no_umap','num_meta_epochs','num_meta_meta_epochs','num_pseudo_label_epochs','reinit','step_size','subject_independent']
+RELEVANT_ARGS = []

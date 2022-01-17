@@ -31,7 +31,7 @@ class Net(nn.Module):
 class ClusterNet(nn.Module):
     def __init__(self,nc1,nc2,nc3,temperature):
         super().__init__()
-        self.conv1 = nn.Conv2d(1 if ARGS.MNIST else 3, 6, 5)
+        self.conv1 = nn.Conv2d(3, 6, 5)
         self.bn1 = nn.BatchNorm2d(6)
         self.pool = nn.MaxPool2d(2, 2)
         self.conv2 = nn.Conv2d(6, 16, 5)
@@ -48,18 +48,8 @@ class ClusterNet(nn.Module):
         self.k2s = torch.randn(nc2,16,requires_grad=True,device='cuda')
         self.k3s = torch.randn(nc3,120,requires_grad=True,device='cuda')
 
-        self.v1s = torch.randn(nc1,6,requires_grad=True,device='cuda')
-        self.v2s = torch.randn(nc2,16,requires_grad=True,device='cuda')
-        self.v3s = torch.randn(nc3,120,requires_grad=True,device='cuda')
-
         self.ng_opt = optim.Adam([{'params':self.k1s},{'params':self.k2s},{'params':self.k3s}])
-        self.opt.add_param_group({'params':self.v1s})
-        self.opt.add_param_group({'params':self.v2s})
-        self.opt.add_param_group({'params':self.v3s})
 
-        self.k1_counts = [0]*nc1
-        self.k2_counts = [0]*nc2
-        self.k2_counts = torch.zeros(nc2,device='cuda').int()
         self.k3_counts = torch.zeros(nc3,device='cuda').int()
         self.k3_raw_counts = torch.zeros(nc3,device='cuda').int()
 
@@ -88,9 +78,6 @@ class ClusterNet(nn.Module):
         self.act_logits3 = -(act3[:,None]-self.k3s).norm(dim=2)
         x = F.relu(act3)
         act4 = self.fc2(x)
-        if self.training and ARGS.eve:
-            eve_loss += open_eve(act3)
-            eve_loss.backward(retain_graph=True)
         if ARGS.ng:
             cluster_loss,assignments = self.assign_keys_ng(3)
         elif ARGS.entropy:
@@ -141,7 +128,6 @@ class ClusterNet(nn.Module):
             nzs = (neg_cost_table-(counts+1).log() == cost).nonzero()
             if len(nzs)!=1: had_repeats = True
             new_vec_idx, new_assigned_key = nzs[0]
-            #print(counts[new_assigned_key].item())
             unassigned_idxs[new_vec_idx] = False
             assigned_key_order.append(new_vec_idx)
             assignments[new_vec_idx] = new_assigned_key
@@ -178,17 +164,6 @@ class ClusterNet(nn.Module):
             ng_running_loss += ng_loss.item()
             if (self.k1s==0).all() or (self.k2s==0).all() or (self.k3s==0).all(): set_trace()
 
-    def test_epoch(self,testloader):
-        correct = 0
-        total = 0
-        for data in testloader:
-            images, labels = data
-            outputs,ng_loss,eve_loss = self(images.cuda())
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels.cuda()).sum().item()
-        return correct/total
-
     def test_epoch_unsupervised(self,testloader):
         self.eval()
         preds = []
@@ -213,21 +188,6 @@ def neural_gas_loss(v,temp):
     weightings = (-torch.arange(n_clusters,device=v.device)/temp).exp()
     sorted_v, _ = torch.sort(v)
     return (sorted_v**2 * weightings).sum(axis=1)
-
-
-def argmax_coords(t):
-    max_val = t.max()
-    return (t==max_val).nonzero()[0], max_val
-
-def us_cross_entropy_logits(scores):
-    if (scores.max(axis=1)[0] > 0).any(): set_trace()
-    return -scores.max(axis=1)[0].mean()
-
-def open_eve(scores):
-    eve_diff = (scores.mean(axis=1).var(unbiased=False) - scores.var(axis=1,unbiased=False).mean())
-    eve_diff_as_frac = eve_diff / scores.var(unbiased=False)
-    if not eve_diff_as_frac <= 1: set_trace()
-    return eve_diff_as_frac
 
 
 ARGS = cl_args.get_cl_args()
