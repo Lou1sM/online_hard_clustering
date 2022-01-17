@@ -87,7 +87,7 @@ class ClusterNet(nn.Module):
         act3 = self.fc1(x)
         self.act_logits3 = -(act3[:,None]-self.k3s).norm(dim=2)
         x = F.relu(act3)
-        outp = self.fc2(x)
+        act4 = self.fc2(x)
         if self.training and ARGS.eve:
             eve_loss += open_eve(act3)
             eve_loss.backward(retain_graph=True)
@@ -99,7 +99,7 @@ class ClusterNet(nn.Module):
             for a in self.act_logits3.argmax(axis=1):
                 self.k3_raw_counts[a]+=1
             cluster_loss,assignments = self.assign_keys_probabilistic(3)
-        return outp,cluster_loss.mean()
+        return assignments,cluster_loss.mean(),act4
 
     def assign_keys_ng(self,layer_num):
         if layer_num == 1:
@@ -129,7 +129,7 @@ class ClusterNet(nn.Module):
             counts = self.k3_counts
         flat_x = x.transpose(0,1).flatten(1).transpose(0,1)
         assigned_key_order = []
-        assignments = []
+        assignments = torch.zeros_like(x[:,0]).long()
         costs = []
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         neg_cost_table = 0.1*flat_x
@@ -141,16 +141,16 @@ class ClusterNet(nn.Module):
             nzs = (neg_cost_table-(counts+1).log() == cost).nonzero()
             if len(nzs)!=1: had_repeats = True
             new_vec_idx, new_assigned_key = nzs[0]
+            #print(counts[new_assigned_key].item())
             unassigned_idxs[new_vec_idx] = False
             assigned_key_order.append(new_vec_idx)
-            assignments.append(new_assigned_key)
+            assignments[new_vec_idx] = new_assigned_key
             assert cost < 0
             costs.append(-cost)
             counts[new_assigned_key] += 1
             if (assign_iter+1) % 1000 == 0: print(assign_iter)
-        assignments_tensor = torch.tensor(assignments,device=x.device)
         assigned_key_order_tensor = torch.tensor(assigned_key_order,device=x.device)
-        return -neg_cost_table[assigned_key_order_tensor,assignments_tensor],assignments_tensor
+        return -neg_cost_table[torch.arange(len(assignments)),assignments],assignments
 
     def train_epoch(self,trainloader):
         running_loss = 0.0
@@ -158,7 +158,8 @@ class ClusterNet(nn.Module):
         eve_running_loss = 0.0
         for i, data in enumerate(trainloader):
             inputs, labels = data
-            outputs,ng_loss = self(inputs.cuda())
+            if ARGS.i50 and i==50: set_trace()
+            assignments,ng_loss,act4 = self(inputs.cuda())
             unsupervised_loss = ng_loss
             unsupervised_loss.backward()
             self.opt.step()
@@ -191,16 +192,21 @@ class ClusterNet(nn.Module):
     def test_epoch_unsupervised(self,testloader):
         self.eval()
         preds = []
+        assigns = []
         for data in testloader:
             images, labels = data
-            outputs,ng_loss = self(images.cuda())
-            #_, predicted = torch.max(outputs.data, 1)
+            assignments,ng_loss,act4 = self(images.cuda())
             predicted = self.act_logits3.argmax(axis=1)
             preds.append(predicted.cpu().numpy())
+            assigns.append(assignments.cpu().numpy())
         pred_array = np.concatenate(preds)
-        acc = accuracy(pred_array,np.array(testloader.dataset.targets))
+        assign_array = np.concatenate(assigns)
+        pred_acc = accuracy(pred_array,np.array(testloader.dataset.targets))
+        assign_acc = accuracy(assign_array,np.array(testloader.dataset.targets))
         print(label_counts(pred_array))
-        return acc
+        print(label_counts(assign_array))
+        print(f"Centroids Acc: {pred_acc}\tAssign Acc: {assign_acc}")
+        return pred_acc,assign_acc
 
 def neural_gas_loss(v,temp):
     n_instances, n_clusters = v.shape
@@ -225,12 +231,8 @@ def open_eve(scores):
 
 
 ARGS = cl_args.get_cl_args()
-if ARGS.MNIST:
-    transform = ToTensor()
-    get_dset_fn = torchvision.datasets.MNIST
-else:
-    get_dset_fn = torchvision.datasets.ImageNet if ARGS.ImageNet else torchvision.datasets.CIFAR10
-    transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
+get_dset_fn = torchvision.datasets.CIFAR100 if ARGS.C100 else torchvision.datasets.CIFAR10
+transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
 
 testset = get_dset_fn(root='./data', train=False, download=True, transform=transform)
 if ARGS.test:
@@ -246,13 +248,17 @@ else:
     trainset = torchvision.datasets.CIFAR10(root='./data',train=True,download=True,transform=transform)
 trainloader = torch.utils.data.DataLoader(trainset,batch_size=ARGS.batch_size,shuffle=True,num_workers=8)
 
-testloader = torch.utils.data.DataLoader(testset, batch_size=ARGS.batch_size,shuffle=False,num_workers=8)
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+trainset.data = np.concatenate([trainset.data,testset.data])
+trainset.targets = np.concatenate([trainset.targets,testset.targets])
+#print(trainset.data.shape,trainset.targets.shape)
+testloader = torch.utils.data.DataLoader(trainset, batch_size=ARGS.batch_size,shuffle=False,num_workers=8)
+#set_trace()
 
 with torch.autograd.set_detect_anomaly(True):
     cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3,ARGS.temperature).cuda()
     for epoch_num in range(1,ARGS.num_epochs+1):
         cluster_net.temperature = ARGS.temperature/epoch_num
         cluster_net.train_epoch(trainloader)
-    acc = cluster_net.test_epoch_unsupervised(testloader)
-print(f"Cluster net acc is {(100*acc):.2f}")
+        pred_acc,centroid_acc = cluster_net.test_epoch_unsupervised(testloader)
+        #print(f"Epoch {epoch_num} acc is {(100*acc):.2f}")
