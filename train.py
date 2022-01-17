@@ -1,7 +1,7 @@
 import torch
 from dl_utils.label_funcs import label_counts, accuracy
 import torchvision
-import torchvision.transforms as transforms
+from torchvision.transforms import Compose, Normalize, ToTensor
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -31,7 +31,7 @@ class Net(nn.Module):
 class ClusterNet(nn.Module):
     def __init__(self,nc1,nc2,nc3,temperature):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.conv1 = nn.Conv2d(1 if ARGS.MNIST else 3, 6, 5)
         self.bn1 = nn.BatchNorm2d(6)
         self.pool = nn.MaxPool2d(2, 2)
         self.conv2 = nn.Conv2d(6, 16, 5)
@@ -91,14 +91,14 @@ class ClusterNet(nn.Module):
         if self.training and ARGS.eve:
             eve_loss += open_eve(act3)
             eve_loss.backward(retain_graph=True)
-        if ARGS.prob:
-            for a in self.act_logits3.argmax(axis=1):
-                self.k3_raw_counts[a]+=1
-            cluster_loss,assignments = self.assign_keys_probabilistic(3)
-        elif ARGS.ng:
+        if ARGS.ng:
             cluster_loss,assignments = self.assign_keys_ng(3)
         elif ARGS.entropy:
             cluster_loss,assignments = Categorical(self.act_logits3).entropy().mean()
+        else:
+            for a in self.act_logits3.argmax(axis=1):
+                self.k3_raw_counts[a]+=1
+            cluster_loss,assignments = self.assign_keys_probabilistic(3)
         return outp,cluster_loss.mean()
 
     def assign_keys_ng(self,layer_num):
@@ -225,10 +225,14 @@ def open_eve(scores):
 
 
 ARGS = cl_args.get_cl_args()
-transform = transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
+if ARGS.MNIST:
+    transform = ToTensor()
+    get_dset_fn = torchvision.datasets.MNIST
+else:
+    get_dset_fn = torchvision.datasets.ImageNet if ARGS.ImageNet else torchvision.datasets.CIFAR10
+    transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
 
-
-testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+testset = get_dset_fn(root='./data', train=False, download=True, transform=transform)
 if ARGS.test:
     trainset = testset
     trainset.data = trainset.data[:1000]
