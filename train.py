@@ -1,14 +1,17 @@
 import torch
+from torch.utils.tensorboard import SummaryWriter
 from dl_utils.label_funcs import label_counts, accuracy
 import torchvision
 from torchvision.transforms import Compose, Normalize, ToTensor
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.data import DataLoader
 from torch.distributions import Categorical
 import cl_args
 from pdb import set_trace
 import numpy as np
+from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 
 
 class Net(nn.Module):
@@ -29,7 +32,7 @@ class Net(nn.Module):
         return x
 
 class ClusterNet(nn.Module):
-    def __init__(self,nc1,nc2,nc3,temperature):
+    def __init__(self,nc1,nc2,nc3,writer):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 6, 5)
         self.bn1 = nn.BatchNorm2d(6)
@@ -57,7 +60,7 @@ class ClusterNet(nn.Module):
         self.act_logits2 = None
         self.act_logits3 = None
 
-        self.temperature = temperature
+        self.writer = writer
 
     def reset_scores(self):
         self.k1_counts = [0]*self.nc1
@@ -121,6 +124,8 @@ class ClusterNet(nn.Module):
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         neg_cost_table = 0.1*flat_x
         had_repeats = False
+        if not self.training:
+            return torch.zeros_like(x[:,0]), x.argmax(axis=1)
         for assign_iter in range(len(flat_x)):
             try:assert (~unassigned_idxs).sum() == assign_iter  or had_repeats
             except: set_trace()
@@ -134,54 +139,60 @@ class ClusterNet(nn.Module):
             assert cost < 0
             costs.append(-cost)
             counts[new_assigned_key] += 1
-            if (assign_iter+1) % 1000 == 0: print(assign_iter)
         assigned_key_order_tensor = torch.tensor(assigned_key_order,device=x.device)
         return -neg_cost_table[torch.arange(len(assignments)),assignments],assignments
 
-    def train_epoch(self,trainloader):
+    def train_one_epoch(self,trainloader,epoch_num):
+        self.train()
         running_loss = 0.0
         ng_running_loss = 0.0
         eve_running_loss = 0.0
         for i, data in enumerate(trainloader):
+            self.reset_scores()
             inputs, labels = data
-            if ARGS.i50 and i==50: set_trace()
+            if i==ARGS.db_at: set_trace()
             assignments,ng_loss,act4 = self(inputs.cuda())
             unsupervised_loss = ng_loss
+            writer.add_scalar('Loss',unsupervised_loss,i + len(trainloader.dataset)*epoch_num)
             unsupervised_loss.backward()
             self.opt.step()
             self.ng_opt.step()
             self.opt.zero_grad(); self.ng_opt.zero_grad()
-            if (i+1) % 10 == 0:
+            if i % 10 == 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.k3_counts):
                         if v>0: print(k,v.item(),self.k3_raw_counts[k].item())
-                print(f'loss: {running_loss/50:.3f} ng_loss: {ng_running_loss/50:.3f}')
+                print(f'loss: {running_loss/10:.3f} ng_loss: {ng_running_loss/10:.3f}')
                 running_loss = 0.0
                 ng_running_loss = 0.0
                 eve_running_loss = 0.0
-            self.reset_scores()
             running_loss += unsupervised_loss.item()
             ng_running_loss += ng_loss.item()
             if (self.k1s==0).all() or (self.k2s==0).all() or (self.k3s==0).all(): set_trace()
 
+    def train_epochs(self,num_epochs,dset,val_too=True):
+        trainloader = DataLoader(dset,batch_size=ARGS.batch_size_train,shuffle=True,num_workers=8)
+        testloader = DataLoader(dset, batch_size=ARGS.batch_size_val,shuffle=False,num_workers=8)
+        for epoch_num in range(num_epochs):
+            self.train_one_epoch(trainloader,epoch_num)
+            if val_too:
+                gt = testloader.dataset.targets
+                pred_array = self.test_epoch_unsupervised(testloader)
+                print(label_counts(pred_array))
+                acc = accuracy(pred_array,np.array(gt))
+                nmi = normalized_mutual_info_score(pred_array,np.array(gt))
+                ari = adjusted_rand_score(pred_array,np.array(gt))
+                print(f"Epoch: {epoch_num}\tAcc: {acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
+
     def test_epoch_unsupervised(self,testloader):
         self.eval()
         preds = []
-        assigns = []
         for data in testloader:
             images, labels = data
-            assignments,ng_loss,act4 = self(images.cuda())
-            predicted = self.act_logits3.argmax(axis=1)
+            predicted,ng_loss,act4 = self(images.cuda())
             preds.append(predicted.cpu().numpy())
-            assigns.append(assignments.cpu().numpy())
         pred_array = np.concatenate(preds)
-        assign_array = np.concatenate(assigns)
-        pred_acc = accuracy(pred_array,np.array(testloader.dataset.targets))
-        assign_acc = accuracy(assign_array,np.array(testloader.dataset.targets))
-        print(label_counts(pred_array))
-        print(label_counts(assign_array))
-        print(f"Centroids Acc: {pred_acc}\tAssign Acc: {assign_acc}")
-        return pred_acc,assign_acc
+        return pred_array
 
 def neural_gas_loss(v,temp):
     n_instances, n_clusters = v.shape
@@ -206,19 +217,12 @@ elif ARGS.semitest:
     trainset.targets = torch.tensor(trainset.targets)[rand_idxs].tolist()
 else:
     trainset = torchvision.datasets.CIFAR10(root='./data',train=True,download=True,transform=transform)
-trainloader = torch.utils.data.DataLoader(trainset,batch_size=ARGS.batch_size,shuffle=True,num_workers=8)
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 trainset.data = np.concatenate([trainset.data,testset.data])
 trainset.targets = np.concatenate([trainset.targets,testset.targets])
-#print(trainset.data.shape,trainset.targets.shape)
-testloader = torch.utils.data.DataLoader(trainset, batch_size=ARGS.batch_size,shuffle=False,num_workers=8)
-#set_trace()
 
+writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
-    cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3,ARGS.temperature).cuda()
-    for epoch_num in range(1,ARGS.num_epochs+1):
-        cluster_net.temperature = ARGS.temperature/epoch_num
-        cluster_net.train_epoch(trainloader)
-        pred_acc,centroid_acc = cluster_net.test_epoch_unsupervised(testloader)
-        #print(f"Epoch {epoch_num} acc is {(100*acc):.2f}")
+    cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3,writer).cuda()
+    cluster_net.train_epochs(ARGS.epochs,trainset,val_too=True)
