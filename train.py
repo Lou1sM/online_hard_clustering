@@ -143,25 +143,25 @@ class ClusterNet(nn.Module):
         assignments = torch.zeros_like(x[:,0]).long()
         costs = []
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
-        neg_cost_table = 0.1*flat_x
+        cost_table = 0.1*flat_x
         had_repeats = False
         if not self.training:
             return torch.zeros_like(x[:,0]), x.argmax(axis=1)
         for assign_iter in range(len(flat_x)):
             try:assert (~unassigned_idxs).sum() == assign_iter  or had_repeats
             except: set_trace()
-            cost = (neg_cost_table[unassigned_idxs]-(counts+1).log()).max()
-            nzs = (neg_cost_table-(counts+1).log() == cost).nonzero()
+            cost = (cost_table[unassigned_idxs]+(counts+1).log()).min()
+            nzs = (cost_table+(counts+1).log() == cost).nonzero()
             if len(nzs)!=1: had_repeats = True
             new_vec_idx, new_assigned_key = nzs[0]
             unassigned_idxs[new_vec_idx] = False
             assigned_key_order.append(new_vec_idx)
             assignments[new_vec_idx] = new_assigned_key
-            assert cost < 0
+            assert cost > 0
             costs.append(-cost)
             counts[new_assigned_key] += 1
         assigned_key_order_tensor = torch.tensor(assigned_key_order,device=x.device)
-        return -neg_cost_table[torch.arange(len(assignments)),assignments],assignments
+        return cost_table[torch.arange(len(assignments)),assignments],assignments
 
     def train_one_epoch(self,trainloader,epoch_num):
         self.train()
@@ -169,6 +169,7 @@ class ClusterNet(nn.Module):
         ng_running_loss = 0.0
         eve_running_loss = 0.0
         for i, data in enumerate(trainloader):
+            self.reset_scores()
             inputs, labels = data
             if i==ARGS.db_at: set_trace()
             assignments,ng_loss,act4 = self(inputs.cuda())
@@ -186,7 +187,6 @@ class ClusterNet(nn.Module):
                 running_loss = 0.0
                 ng_running_loss = 0.0
                 eve_running_loss = 0.0
-                self.reset_scores()
             running_loss += unsupervised_loss.item()
             ng_running_loss += ng_loss.item()
             if (self.k1s==0).all() or (self.k2s==0).all() or (self.k3s==0).all(): set_trace()
