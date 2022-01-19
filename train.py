@@ -32,7 +32,7 @@ class Net(nn.Module):
         return x
 
 class ClusterNet(nn.Module):
-    def __init__(self,nc1,nc2,nc3,writer):
+    def __init__(self,nc1,nc2,nc3,writer,temperature):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 6, 5)
         self.bn1 = nn.BatchNorm2d(6)
@@ -61,6 +61,8 @@ class ClusterNet(nn.Module):
         self.act_logits3 = None
 
         self.writer = writer
+        self.epoch_num = -1
+        self.temperature = temperature
 
     def reset_scores(self):
         self.k1_counts = [0]*self.nc1
@@ -71,24 +73,26 @@ class ClusterNet(nn.Module):
     def forward(self, inp):
         eve_loss = 0
         act1 = self.bn1(self.conv1(inp))
-        self.act_logits1 = -(act1[:,None]-self.k1s[:,:,None,None]).norm(dim=2)
+        self.act_logits1 = (act1[:,None]-self.k1s[:,:,None,None]).norm(dim=2)
         x = self.pool(F.relu(act1))
         act2 = self.bn2(self.conv2(x))
-        self.act_logits2 = -(act2[:,None]-self.k2s[:,:,None,None]).norm(dim=2)
+        self.act_logits2 = (act2[:,None]-self.k2s[:,:,None,None]).norm(dim=2)
         x = self.pool(F.relu(act2))
         x = torch.flatten(x, 1) # flatten all dimensions except batch
         act3 = self.fc1(x)
-        self.act_logits3 = -(act3[:,None]-self.k3s).norm(dim=2)
+        self.act_logits3 = (act3[:,None]-self.k3s).norm(dim=2)
         x = F.relu(act3)
         act4 = self.fc2(x)
         if ARGS.ng:
             cluster_loss,assignments = self.assign_keys_ng(3)
         elif ARGS.entropy:
             cluster_loss,assignments = Categorical(self.act_logits3).entropy().mean()
+        elif ARGS.prob_approx:
+            cluster_loss,assignments = self.assign_keys_probabilistic_approx(3)
         else:
-            for a in self.act_logits3.argmax(axis=1):
-                self.k3_raw_counts[a]+=1
             cluster_loss,assignments = self.assign_keys_probabilistic(3)
+        for a in self.act_logits3.argmax(axis=1):
+            self.k3_raw_counts[a]+=1
         return assignments,cluster_loss.mean(),act4
 
     def assign_keys_ng(self,layer_num):
@@ -101,11 +105,28 @@ class ClusterNet(nn.Module):
         if layer_num == 3:
             x,num_keys = self.act_logits3, self.nc3
             counts = self.k3_counts
-        cost = neural_gas_loss(x,self.temperature)
-        assignments = x.argmax(axis=1)
+        #print(self.k3s[:,0])
+        cost,assignments = neural_gas_loss(.001*x+(counts+1).log(),self.temperature)
         for a in assignments:
             counts[a] += 1
         return cost, assignments
+
+    def assign_keys_probabilistic_approx(self,layer_num):
+        if layer_num == 1:
+            x,num_keys = self.act_logits1, self.nc1
+            counts = self.k1_counts
+        if layer_num == 2:
+            x,num_keys = self.act_logits2, self.nc2
+            counts = self.k2_counts
+        if layer_num == 3:
+            x,num_keys = self.act_logits3, self.nc3
+            counts = self.k3_counts
+        neg_cost_table = 0.1*x.transpose(0,1).flatten(1).transpose(0,1)
+        assignments = torch.zeros_like(x[:,0]).long()
+        cost,assignments = (neg_cost_table + (counts+1).log()).max(axis=1)
+        for ass in assignments:
+            counts[ass] += 1
+        return -cost, assignments
 
     def assign_keys_probabilistic(self,layer_num):
         if layer_num == 1:
@@ -148,7 +169,6 @@ class ClusterNet(nn.Module):
         ng_running_loss = 0.0
         eve_running_loss = 0.0
         for i, data in enumerate(trainloader):
-            self.reset_scores()
             inputs, labels = data
             if i==ARGS.db_at: set_trace()
             assignments,ng_loss,act4 = self(inputs.cuda())
@@ -166,6 +186,7 @@ class ClusterNet(nn.Module):
                 running_loss = 0.0
                 ng_running_loss = 0.0
                 eve_running_loss = 0.0
+                self.reset_scores()
             running_loss += unsupervised_loss.item()
             ng_running_loss += ng_loss.item()
             if (self.k1s==0).all() or (self.k2s==0).all() or (self.k3s==0).all(): set_trace()
@@ -197,8 +218,9 @@ class ClusterNet(nn.Module):
 def neural_gas_loss(v,temp):
     n_instances, n_clusters = v.shape
     weightings = (-torch.arange(n_clusters,device=v.device)/temp).exp()
-    sorted_v, _ = torch.sort(v)
-    return (sorted_v**2 * weightings).sum(axis=1)
+    sorted_v, assignments_order = torch.sort(v)
+    assert (sorted_v**2 * weightings).mean() < ((sorted_v**2).mean() * weightings.mean())
+    return (sorted_v**2 * weightings).sum(axis=1), assignments_order[:,0]
 
 
 ARGS = cl_args.get_cl_args()
@@ -224,5 +246,5 @@ trainset.targets = np.concatenate([trainset.targets,testset.targets])
 
 writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
-    cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3,writer).cuda()
+    cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3,writer,temperature=ARGS.temperature).cuda()
     cluster_net.train_epochs(ARGS.epochs,trainset,val_too=True)

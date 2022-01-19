@@ -9,6 +9,7 @@ def get_cl_args():
     test_group.add_argument('--semitest','-st',action='store_true')
     train_type_group = parser.add_mutually_exclusive_group()
     train_type_group.add_argument('--prob',action='store_true')
+    train_type_group.add_argument('--prob_approx',action='store_true')
     train_type_group.add_argument('--ng',action='store_true')
     train_type_group.add_argument('--entropy',action='store_true')
     train_type_group.add_argument('--no_cluster_loss',action='store_true')
