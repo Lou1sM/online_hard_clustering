@@ -103,11 +103,10 @@ class ClusterNet(nn.Module):
         elif ARGS.prob_approx:
             cluster_loss,assignments = self.assign_keys_probabilistic_approx(3)
         elif ARGS.sinkhorn:
-            #with torch.no_grad():
-                #soft_assignments = sinkhorn(-self.act_logits3,eps=1.)
-            soft_assignments = self.act_logits3.softmax(axis=1)
+            with torch.no_grad():
+                soft_assignments = sinkhorn(-self.act_logits3,eps=.5)
             assignments = soft_assignments.argmin(axis=1)
-            cluster_loss = (self.act_logits3*soft_assignments)
+            cluster_loss = self.act_logits3[torch.arange(len(assignments)),assignments]
             for ass in assignments:
                 self.k3_counts[ass] += 1
         elif ARGS.kl:
@@ -229,7 +228,7 @@ class ClusterNet(nn.Module):
             if i % 10 == 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.k3_counts):
-                        print(k,v.item(),self.k3_raw_counts[k].item(),round(self.soft_counts[k].item(),4))
+                        print(f"{k} constrained: {v.item()}\traw: {self.k3_raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
                 print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
                 running_loss = 0.0
                 ng_running_loss = 0.0
@@ -241,7 +240,7 @@ class ClusterNet(nn.Module):
     def train_epochs(self,num_epochs,dset,val_too=True):
         trainloader = DataLoader(dset,batch_size=ARGS.batch_size_train,shuffle=True,num_workers=8)
         testloader = DataLoader(dset, batch_size=ARGS.batch_size_val,shuffle=False,num_workers=8)
-        if ARGS.init_from_dpoints:
+        if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
             self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
@@ -258,7 +257,10 @@ class ClusterNet(nn.Module):
                 ari = adjusted_rand_score(pred_array,np.array(gt))
                 hce = np_entropy(epoch_hard_counts)
                 sce = np_entropy(epoch_soft_counts)
+                hcv = epoch_hard_counts.var()
+                scv = epoch_soft_counts.var()
                 print(f"Hard counts entropy: {hce:.4f}\tSoft counts entropy: {sce:.4f}")
+                print(f"Hard counts variance: {hcv:.4f}\tSoft counts variance: {scv:.4f}")
                 print(f"Epoch: {epoch_num}\tAcc: {acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
 
     def test_epoch_unsupervised(self,testloader):

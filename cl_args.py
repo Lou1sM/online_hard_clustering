@@ -23,7 +23,7 @@ def get_cl_args():
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--eve',action='store_true')
-    parser.add_argument('--init_from_dpoints',action='store_true')
+    parser.add_argument('--warm_start',action='store_true')
     parser.add_argument('--db_at',type=int,default=-1)
     parser.add_argument('--nc1',type=int,default=15)
     parser.add_argument('--nc2',type=int,default=12)
