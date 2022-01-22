@@ -1,5 +1,4 @@
 import torch
-import gc
 from scipy.stats import entropy as np_entropy
 from torch.utils.tensorboard import SummaryWriter
 from dl_utils.label_funcs import label_counts, accuracy
@@ -34,7 +33,7 @@ class Net(nn.Module):
         return x
 
 class ClusterNet(nn.Module):
-    def __init__(self,nc1,nc2,nc3,writer,temperature):
+    def __init__(self,nc,bs_train,bs_val,writer,temp):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 6, 5)
         self.bn1 = nn.BatchNorm2d(6)
@@ -45,201 +44,148 @@ class ClusterNet(nn.Module):
         self.fc2 = nn.Linear(120, 10)
         self.opt = optim.Adam(self.parameters())
 
-        self.nc1 = nc1
-        self.nc2 = nc2
-        self.nc3 = nc3
+        self.bs_train = bs_train
+        self.bs_val = bs_val
+        self.nc = nc
 
-        self.k1s = torch.randn(nc1,6,requires_grad=True,device='cuda')
-        self.k2s = torch.randn(nc2,16,requires_grad=True,device='cuda')
-        self.k3s = torch.randn(nc3,120,requires_grad=True,device='cuda')
+        self.centroids = torch.randn(nc,120,requires_grad=True,device='cuda')
 
-        self.ng_opt = optim.Adam([{'params':self.k1s},{'params':self.k2s},{'params':self.k3s}])
+        self.ng_opt = optim.Adam([{'params':self.centroids}])
 
-        self.k3_counts = torch.zeros(nc3,device='cuda').int()
-        self.k3_raw_counts = torch.zeros(nc3,device='cuda').int()
-        self.total_soft_counts = torch.zeros(nc3,device='cuda')
+        self.cluster_counts = torch.zeros(nc,device='cuda').int()
+        self.raw_counts = torch.zeros(nc,device='cuda').int()
+        self.total_soft_counts = torch.zeros(nc,device='cuda')
 
-        self.act_logits1 = None
-        self.act_logits2 = None
-        self.act_logits3 = None
+        self.cluster_dists = None
 
         self.writer = writer
         self.epoch_num = -1
-        self.temperature = temperature
+        self.temp = temp
 
     def reset_scores(self):
-        self.k1_counts = [0]*self.nc1
-        self.k2_counts = torch.zeros(self.nc2,device='cuda').int()
-        self.k3_counts = torch.zeros(self.nc3,device='cuda').int()
-        self.k3_raw_counts = torch.zeros(self.nc3,device='cuda').int()
+        self.cluster_counts = torch.zeros(self.nc,device='cuda').int()
+        self.raw_counts = torch.zeros(self.nc,device='cuda').int()
 
     def init_keys_as_dpoints(self,dloader):
-        #transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
-        #rand_idxs = torch.randint(len(dset.data),size=(self.nc3,))
         inp,targets = next(iter(dloader))
-        inp = inp[:self.nc3]
+        inp = inp[:self.nc]
         act1 = self.pool(F.relu(self.bn1(self.conv1(torch.tensor(inp,device='cuda')))))
         act2 = self.pool(F.relu(self.bn2(self.conv2(act1))))
         act3 = self.fc1(torch.flatten(act2, 1))
-        self.k3s = act3.clone().detach().requires_grad_(True)
+        self.centroids = act3.clone().detach().requires_grad_(True)
 
     def forward(self, inp):
-        eve_loss = 0
+        self.bs = inp.shape[0]
         act1 = self.bn1(self.conv1(inp))
-        #self.act_logits1 = (act1[:,None]-self.k1s[:,:,None,None]).norm(dim=2)
         x = self.pool(F.relu(act1))
         act2 = self.bn2(self.conv2(x))
-        #self.act_logits2 = (act2[:,None]-self.k2s[:,:,None,None]).norm(dim=2)
         x = self.pool(F.relu(act2))
         x = torch.flatten(x, 1) # flatten all dimensions except batch
         act3 = self.fc1(x)
-        self.act_logits3 = (act3[:,None]-self.k3s).norm(dim=2)
-        x = F.relu(act3)
-        act4 = self.fc2(x)
+        self.cluster_dists = (act3[:,None]-self.centroids).norm(dim=2)
+        self.assign_batch()
+
+    def assign_batch(self):
         if ARGS.ng:
-            cluster_loss,assignments = self.assign_keys_ng(3)
+            self.cluster_loss,self.batch_assignments = neural_gas_loss(.1*self.cluster_dists+(self.cluster_counts+1).log(),self.temp)
         elif ARGS.iterative:
-            cluster_loss,assignments = self.assign_keys_iterative(3)
-        elif ARGS.prob_approx:
-            cluster_loss,assignments = self.assign_keys_probabilistic_approx(3)
-        elif ARGS.sinkhorn:
-            with torch.no_grad():
-                soft_assignments = sinkhorn(-self.act_logits3,eps=.5)
-            assignments = soft_assignments.argmin(axis=1)
-            cluster_loss = self.act_logits3[torch.arange(len(assignments)),assignments]
-            for ass in assignments:
-                self.k3_counts[ass] += 1
+            self.assign_batch_iterative()
+        elif ARGS.parallel:
+            self.assign_batch_parallel()
         elif ARGS.kl:
-            cluster_loss = 100*-Categorical(self.act_logits3.mean(axis=0)).entropy()
-            cluster_loss += 0.1*Categorical(self.act_logits3).entropy().mean()
-            assignments = self.act_logits3.argmin(axis=1)
-            for ass in assignments:
-                self.k3_counts[ass] += 1
+            self.assign_batch_kl()
+        elif ARGS.sinkhorn:
+            self.assign_batch_sinkhorn()
         else:
-            cluster_loss,assignments = self.assign_keys_probabilistic(3)
-        for a in self.act_logits3.argmin(axis=1):
-            self.k3_raw_counts[a]+=1
-        self.soft_counts = self.act_logits3.softmax(axis=1).mean(axis=0).detach()
+            self.assign_batch_probabilistic()
+
+        for ass in self.batch_assignments:
+            self.cluster_counts[ass] += 1
+            self.raw_counts[ass]+=1
+        if not ARGS.sinkhorn or ARGS.ng:
+            self.soft_counts = self.cluster_dists.softmax(axis=1).sum(axis=0).detach()
         self.total_soft_counts += self.soft_counts
-        return assignments,cluster_loss.mean(),act4
 
-    def assign_keys_ng(self,layer_num):
-        if layer_num == 1:
-            x,num_keys = self.act_logits1, self.nc1
-            counts = self.k1_counts
-        if layer_num == 2:
-            x,num_keys = self.act_logits2, self.nc2
-            counts = self.k2_counts
-        if layer_num == 3:
-            x,num_keys = self.act_logits3, self.nc3
-            counts = self.k3_counts
-        #print(self.k3s[:,0])
-        cost,assignments = neural_gas_loss(.001*x+(counts+1).log(),self.temperature)
-        for a in assignments:
-            counts[a] += 1
-        return cost, assignments
+    def assign_batch_sinkhorn(self):
+        with torch.no_grad():
+            soft_assignments = sinkhorn(-self.cluster_dists,eps=.5,niters=15)
+        self.batch_assignments = soft_assignments.argmin(axis=1)
+        self.soft_counts = soft_assignments.sum(axis=0).detach()
+        self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
 
-    def assign_keys_probabilistic_approx(self,layer_num):
-        if layer_num == 1:
-            x,num_keys = self.act_logits1, self.nc1
-            counts = self.k1_counts
-        if layer_num == 2:
-            x,num_keys = self.act_logits2, self.nc2
-            counts = self.k2_counts
-        if layer_num == 3:
-            x,num_keys = self.act_logits3, self.nc3
-            counts = self.k3_counts
-        neg_cost_table = 0.1*x.transpose(0,1).flatten(1).transpose(0,1)
-        assignments = torch.zeros_like(x[:,0]).long()
-        cost,assignments = (neg_cost_table + (counts+1).log()).max(axis=1)
-        for ass in assignments:
-            counts[ass] += 1
-        return -cost, assignments
+    def assign_batch_kl(self):
+        self.cluster_loss = 10*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
+        self.cluster_loss += Categorical(self.cluster_dists).entropy().mean()
+        self.batch_assignments = self.cluster_dists.argmin(axis=1)
 
-    def assign_keys_iterative(self,layer_num):
-        if layer_num == 1:
-            x,num_keys = self.act_logits1, self.nc1
-            counts = self.k1_counts
-        if layer_num == 2:
-            x,num_keys = self.act_logits2, self.nc2
-            counts = self.k2_counts
-        if layer_num == 3:
-            x,num_keys = self.act_logits3, self.nc3
-            counts = self.k3_counts
-        flat_x = x.transpose(0,1).flatten(1).transpose(0,1)
-        assignments = []
+    def assign_batch_parallel(self):
+        neg_cost_table = 0.1*self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
+        self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
+        cost,assignments = (neg_cost_table + (self.cluster_counts+1).log()).max(axis=1)
+
+    def assign_batch_iterative(self):
+        flat_x = self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
+        self.batch_assignments = []
         cost_table = 0.1*flat_x
         if not self.training:
-            return torch.zeros_like(x[:,0]), x.argmin(axis=1)
+            return torch.zeros_like(self.cluster_dists[:,0]), self.cluster_dists.argmin(axis=1)
         for assign_row in range(len(flat_x)):
-            new_assigned_key = (assign_row+(counts+1).log()).argmin()
-            assignments.append(new_assigned_key)
-            counts[new_assigned_key] += 1
-        return cost_table[torch.arange(len(assignments)),assignments],assignments
+            new_assigned_key = (assign_row+(self.cluster_counts+1).log()).argmin()
+            self.batch_assignments.append(new_assigned_key)
+            self.cluster_counts[new_assigned_key] += 1
+        self.cluster_loss = cost_table[torch.arange(self.bs),self.batch_assignments].mean()
 
-    def assign_keys_probabilistic(self,layer_num):
-        if layer_num == 1:
-            x,num_keys = self.act_logits1, self.nc1
-            counts = self.k1_counts
-        if layer_num == 2:
-            x,num_keys = self.act_logits2, self.nc2
-            counts = self.k2_counts
-        if layer_num == 3:
-            x,num_keys = self.act_logits3, self.nc3
-            counts = self.k3_counts
-        flat_x = x.transpose(0,1).flatten(1).transpose(0,1)
+    def assign_batch_probabilistic(self):
+        flat_x = self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
         assigned_key_order = []
-        assignments = torch.zeros_like(x[:,0]).long()
+        self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
-        cost_table = 0.1*flat_x
+        cost_table = flat_x/(2*ARGS.sigma)
         had_repeats = False
         if not self.training:
-            return torch.zeros_like(x[:,0]), x.argmin(axis=1)
-        for assign_iter in range(len(flat_x)):
-            try:assert (~unassigned_idxs).sum() == assign_iter  or had_repeats
+            self.batch_assignments = self.cluster_dists.argmin(axis=1)
+        assign_iter = 0
+        while unassigned_idxs.any():
+            try:assert (~unassigned_idxs).sum() == assign_iter or had_repeats
             except: set_trace()
-            cost = (cost_table[unassigned_idxs]+(counts+1).log()).min()
-            nzs = (cost_table+(counts+1).log() == cost).nonzero()
+            cost = (cost_table[unassigned_idxs]+(self.cluster_counts+1).log()).min()
+            nzs = ((cost_table+(self.cluster_counts+1).log() == cost)*unassigned_idxs[:,None]).nonzero()
             if len(nzs)!=1: had_repeats = True
             new_vec_idx, new_assigned_key = nzs[0]
+            if not unassigned_idxs[new_vec_idx]: set_trace()
             unassigned_idxs[new_vec_idx] = False
             assigned_key_order.append(new_vec_idx)
-            assignments[new_vec_idx] = new_assigned_key
+            self.batch_assignments[new_vec_idx] = new_assigned_key
+            self.cluster_counts[new_assigned_key] += 1
             assert cost > 0
-            counts[new_assigned_key] += 1
-        return cost_table[torch.arange(len(assignments)),assignments],assignments
+            assign_iter += 1
+        self.cluster_loss = cost_table[torch.arange(self.bs),self.batch_assignments].mean()
 
     def train_one_epoch(self,trainloader,epoch_num):
         self.train()
         running_loss = 0.0
-        ng_running_loss = 0.0
-        eve_running_loss = 0.0
         for i, data in enumerate(trainloader):
             self.reset_scores()
             inputs, labels = data
             if i==ARGS.db_at: set_trace()
-            assignments,ng_loss,act4 = self(inputs.cuda())
-            unsupervised_loss = ng_loss
-            writer.add_scalar('Loss',unsupervised_loss,i + len(trainloader.dataset)*epoch_num)
-            unsupervised_loss.backward()
+            self(inputs.cuda())
+            writer.add_scalar('Loss',self.cluster_loss,i + len(trainloader.dataset)*epoch_num)
+            self.cluster_loss.backward()
             self.opt.step()
             self.ng_opt.step()
             self.opt.zero_grad(); self.ng_opt.zero_grad()
             if i % 10 == 0:
                 if ARGS.track_counts:
-                    for k,v in enumerate(self.k3_counts):
-                        print(f"{k} constrained: {v.item()}\traw: {self.k3_raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
+                    for k,v in enumerate(self.cluster_counts):
+                        print(f"{k} constrained: {v.item()}\traw: {self.raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
                 print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
                 running_loss = 0.0
-                ng_running_loss = 0.0
-                eve_running_loss = 0.0
-            running_loss += unsupervised_loss.item()
-            ng_running_loss += ng_loss.item()
-            if (self.k1s==0).all() or (self.k2s==0).all() or (self.k3s==0).all(): set_trace()
+            running_loss += self.cluster_loss.item()
+            if (self.centroids==0).all(): set_trace()
 
     def train_epochs(self,num_epochs,dset,val_too=True):
-        trainloader = DataLoader(dset,batch_size=ARGS.batch_size_train,shuffle=True,num_workers=8)
-        testloader = DataLoader(dset, batch_size=ARGS.batch_size_val,shuffle=False,num_workers=8)
+        trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
+        testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
@@ -247,6 +193,7 @@ class ClusterNet(nn.Module):
             self.train_one_epoch(trainloader,epoch_num)
             if val_too:
                 gt = testloader.dataset.targets
+                self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
                 with torch.no_grad():
                     pred_array = self.test_epoch_unsupervised(testloader)
                 num_of_each_label = label_counts(pred_array)
@@ -257,8 +204,9 @@ class ClusterNet(nn.Module):
                 ari = adjusted_rand_score(pred_array,np.array(gt))
                 hce = np_entropy(epoch_hard_counts)
                 sce = np_entropy(epoch_soft_counts)
-                hcv = epoch_hard_counts.var()
-                scv = epoch_soft_counts.var()
+                hcv = epoch_hard_counts.var()/epoch_hard_counts.mean()
+                scv = epoch_soft_counts.var()/epoch_hard_counts.mean()
+                print(num_of_each_label)
                 print(f"Hard counts entropy: {hce:.4f}\tSoft counts entropy: {sce:.4f}")
                 print(f"Hard counts variance: {hcv:.4f}\tSoft counts variance: {scv:.4f}")
                 print(f"Epoch: {epoch_num}\tAcc: {acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
@@ -268,8 +216,8 @@ class ClusterNet(nn.Module):
         preds = []
         for i,data in enumerate(testloader):
             images, labels = data
-            predicted,ng_loss,act4 = self(images.cuda())
-            preds.append(predicted.detach().cpu().numpy())
+            self(images.cuda())
+            preds.append(self.batch_assignments.detach().cpu().numpy())
         pred_array = np.concatenate(preds)
         return pred_array
 
@@ -314,5 +262,5 @@ trainset.targets = np.concatenate([trainset.targets,testset.targets])
 
 writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
-    cluster_net = ClusterNet(ARGS.nc1,ARGS.nc2,ARGS.nc3,writer,temperature=ARGS.temperature).cuda()
+    cluster_net = ClusterNet(ARGS.nc,writer=writer,bs_train=ARGS.batch_size_train,bs_val=ARGS.batch_size_val,temp=ARGS.temp).cuda()
     cluster_net.train_epochs(ARGS.epochs,trainset,val_too=True)
