@@ -1,4 +1,5 @@
 import torch
+import datasets
 from scipy.stats import entropy as np_entropy
 from torch.utils.tensorboard import SummaryWriter
 from dl_utils.label_funcs import label_counts, accuracy
@@ -99,8 +100,10 @@ class ClusterNet(nn.Module):
         else:
             self.assign_batch_probabilistic()
 
-        for ass in self.batch_assignments:
-            self.cluster_counts[ass] += 1
+        if not ARGS.prob:
+            for ass in self.batch_assignments:
+                self.cluster_counts[ass] += 1
+        for ass in self.cluster_dists.argmin(axis=1):
             self.raw_counts[ass]+=1
         if not ARGS.sinkhorn or ARGS.ng:
             self.soft_counts = self.cluster_dists.softmax(axis=1).sum(axis=0).detach()
@@ -119,9 +122,28 @@ class ClusterNet(nn.Module):
         self.batch_assignments = self.cluster_dists.argmin(axis=1)
 
     def assign_batch_parallel(self):
+        if not self.training:
+            self.batch_assignments = self.cluster_dists.argmin(axis=1)
+            return
         neg_cost_table = 0.1*self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
-        self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
-        cost,assignments = (neg_cost_table + (self.cluster_counts+1).log()).max(axis=1)
+        self.batch_assignments = torch.arange(self.nc).tile(self.bs//self.nc)
+        leftovers = torch.arange(self.bs % self.nc)
+        self.batch_assignments = torch.cat([self.batch_assignments,leftovers]).cuda()
+        tentative_counts = torch.tensor([self.bs/self.nc]).tile(self.nc).cuda()
+        num_passes = 50
+        c = self.nc
+        for _ in range(num_passes):
+            for chunk_start_idx in range(0,self.bs,c):
+                chunk = neg_cost_table[chunk_start_idx:chunk_start_idx+c]
+                chunk_assignments = (chunk+(tentative_counts+1).log()).argmin(axis=1)
+                for ass in chunk_assignments:
+                    tentative_counts[ass] += 1
+                for ass in self.batch_assignments[chunk_start_idx:chunk_start_idx+c]:
+                    tentative_counts[ass] -= 1
+                    assert tentative_counts[ass] >= -1
+                assert (tentative_counts.sum() - self.bs).abs() < 1e-3
+                self.batch_assignments[chunk_start_idx:chunk_start_idx+c] = chunk_assignments
+        self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
 
     def assign_batch_iterative(self):
         flat_x = self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
@@ -144,6 +166,7 @@ class ClusterNet(nn.Module):
         had_repeats = False
         if not self.training:
             self.batch_assignments = self.cluster_dists.argmin(axis=1)
+            return
         assign_iter = 0
         while unassigned_idxs.any():
             try:assert (~unassigned_idxs).sum() == assign_iter or had_repeats
@@ -240,27 +263,35 @@ def sinkhorn(scores, eps=0.05, niters=3):
     return (Q / torch.sum(Q, dim=0, keepdim=True)).T
 
 ARGS = cl_args.get_cl_args()
-get_dset_fn = torchvision.datasets.CIFAR100 if ARGS.C100 else torchvision.datasets.CIFAR10
-transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
+if ARGS.imt:
+    dataset = datasets.get_imagenet_tiny(ARGS.test)
+elif ARGS.c10:
+    dataset = datasets.get_cifar10(ARGS.test)
+elif ARGS.c100:
+    dataset = datasets.get_cifar100(ARGS.test)
 
-testset = get_dset_fn(root='./data', train=False, download=True, transform=transform)
-if ARGS.test:
-    trainset = testset
-    trainset.data = trainset.data[:1000]
-    trainset.targets = trainset.targets[:1000]
-elif ARGS.semitest:
-    trainset = testset
-    rand_idxs = torch.randint(len(trainset),size=(10000,))
-    trainset.data = trainset.data[rand_idxs]
-    trainset.targets = torch.tensor(trainset.targets)[rand_idxs].tolist()
-else:
-    trainset = torchvision.datasets.CIFAR10(root='./data',train=True,download=True,transform=transform)
 
-classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-trainset.data = np.concatenate([trainset.data,testset.data])
-trainset.targets = np.concatenate([trainset.targets,testset.targets])
+#get_dset_fn = torchvision.datasets.CIFAR100 if ARGS.C100 else torchvision.datasets.CIFAR10
+#transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
+
+#testset = get_dset_fn(root='./data', train=False, download=True, transform=transform)
+#if ARGS.test:
+#    trainset = testset
+#    trainset.data = trainset.data[:1000]
+#    trainset.targets = trainset.targets[:1000]
+#elif ARGS.semitest:
+#    trainset = testset
+#    rand_idxs = torch.randint(len(trainset),size=(10000,))
+#    trainset.data = trainset.data[rand_idxs]
+#    trainset.targets = torch.tensor(trainset.targets)[rand_idxs].tolist()
+#else:
+#    trainset = torchvision.datasets.CIFAR10(root='./data',train=True,download=True,transform=transform)
+#
+#classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+#trainset.data = np.concatenate([trainset.data,testset.data])
+#trainset.targets = np.concatenate([trainset.targets,testset.targets])
 
 writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
     cluster_net = ClusterNet(ARGS.nc,writer=writer,bs_train=ARGS.batch_size_train,bs_val=ARGS.batch_size_val,temp=ARGS.temp).cuda()
-    cluster_net.train_epochs(ARGS.epochs,trainset,val_too=True)
+    cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
