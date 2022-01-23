@@ -4,9 +4,6 @@ import sys
 
 def get_cl_args():
     parser = argparse.ArgumentParser()
-    test_group = parser.add_mutually_exclusive_group()
-    test_group.add_argument('--test','-t',action='store_true')
-    test_group.add_argument('--semitest','-st',action='store_true')
     train_type_group = parser.add_mutually_exclusive_group()
     train_type_group.add_argument('--prob',action='store_true')
     train_type_group.add_argument('--prob_approx',action='store_true')
@@ -31,6 +28,8 @@ def get_cl_args():
     parser.add_argument('--temp',type=float,default=1.)
     parser.add_argument('--sigma',type=float,default=5.)
     parser.add_argument('--track_counts',action='store_true')
+    parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
+    parser.add_argument('--arch',type=str,choices=['alex','res'])
     ARGS = parser.parse_args()
     return ARGS
 

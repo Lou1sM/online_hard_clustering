@@ -34,56 +34,60 @@ class Net(nn.Module):
         return x
 
 class ClusterNet(nn.Module):
-    def __init__(self,nc,bs_train,bs_val,writer,temp):
+    def __init__(self,nc,bs_train,bs_val,writer,temp,arch):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 6, 5)
-        self.bn1 = nn.BatchNorm2d(6)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.bn2 = nn.BatchNorm2d(16)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 10)
-        self.opt = optim.Adam(self.parameters())
+        if arch == 'alex':
+            self.net = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=False)
+        if arch == 'res':
+            self.net = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False)
+        self.opt = optim.Adam(self.net.parameters())
 
         self.bs_train = bs_train
         self.bs_val = bs_val
         self.nc = nc
 
-        self.centroids = torch.randn(nc,120,requires_grad=True,device='cuda')
+        self.centroids = torch.randn(nc,1000,requires_grad=True,device='cuda')
+        self.ng_opt = optim.Adam([{'params':self.centroids}],lr=1.)
 
-        self.ng_opt = optim.Adam([{'params':self.centroids}])
-
+        self.cluster_dists = None
         self.cluster_counts = torch.zeros(nc,device='cuda').int()
         self.raw_counts = torch.zeros(nc,device='cuda').int()
         self.total_soft_counts = torch.zeros(nc,device='cuda')
 
-        self.cluster_dists = None
-
         self.writer = writer
         self.epoch_num = -1
         self.temp = temp
+
+        self.training = True
+
+    #@Override
+    def train(self):
+        self.training = True
+        self.net.train()
+        self.centroids.requires_grad = True
+
+    #@Override
+    def eval(self):
+        self.training = False
+        self.net.eval()
+        self.centroids.requires_grad = False
 
     def reset_scores(self):
         self.cluster_counts = torch.zeros(self.nc,device='cuda').int()
         self.raw_counts = torch.zeros(self.nc,device='cuda').int()
 
     def init_keys_as_dpoints(self,dloader):
+        self.eval()
         inp,targets = next(iter(dloader))
         inp = inp[:self.nc]
-        act1 = self.pool(F.relu(self.bn1(self.conv1(torch.tensor(inp,device='cuda')))))
-        act2 = self.pool(F.relu(self.bn2(self.conv2(act1))))
-        act3 = self.fc1(torch.flatten(act2, 1))
-        self.centroids = act3.clone().detach().requires_grad_(True)
+        sample_feature_vecs = self.net(inp.cuda())
+        self.centroids = sample_feature_vecs.clone().detach().requires_grad_(True)
 
     def forward(self, inp):
         self.bs = inp.shape[0]
-        act1 = self.bn1(self.conv1(inp))
-        x = self.pool(F.relu(act1))
-        act2 = self.bn2(self.conv2(x))
-        x = self.pool(F.relu(act2))
-        x = torch.flatten(x, 1) # flatten all dimensions except batch
-        act3 = self.fc1(x)
-        self.cluster_dists = (act3[:,None]-self.centroids).norm(dim=2)
+        feature_vecs = self.net(inp)
+        self.cluster_dists = (feature_vecs[:,None]-self.centroids).norm(dim=2)
         self.assign_batch()
 
     def assign_batch(self):
@@ -106,7 +110,7 @@ class ClusterNet(nn.Module):
         for ass in self.cluster_dists.argmin(axis=1):
             self.raw_counts[ass]+=1
         if not ARGS.sinkhorn or ARGS.ng:
-            self.soft_counts = self.cluster_dists.softmax(axis=1).sum(axis=0).detach()
+            self.soft_counts = (-self.cluster_dists).softmax(axis=1).sum(axis=0).detach()
         self.total_soft_counts += self.soft_counts
 
     def assign_batch_sinkhorn(self):
@@ -237,6 +241,7 @@ class ClusterNet(nn.Module):
     def test_epoch_unsupervised(self,testloader):
         self.eval()
         preds = []
+        set_trace()
         for i,data in enumerate(testloader):
             images, labels = data
             self(images.cuda())
@@ -264,11 +269,14 @@ def sinkhorn(scores, eps=0.05, niters=3):
 
 ARGS = cl_args.get_cl_args()
 if ARGS.imt:
-    dataset = datasets.get_imagenet_tiny(ARGS.test)
-elif ARGS.c10:
-    dataset = datasets.get_cifar10(ARGS.test)
+    dataset = datasets.get_imagenet_tiny(ARGS.test_level)
+    nc = 200
 elif ARGS.c100:
-    dataset = datasets.get_cifar100(ARGS.test)
+    dataset = datasets.get_cifar100(ARGS.test_level)
+    nc = 100
+else:
+    dataset = datasets.get_cifar10(ARGS.test_level)
+    nc = 10
 
 
 #get_dset_fn = torchvision.datasets.CIFAR100 if ARGS.C100 else torchvision.datasets.CIFAR10
@@ -293,5 +301,5 @@ elif ARGS.c100:
 
 writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
-    cluster_net = ClusterNet(ARGS.nc,writer=writer,bs_train=ARGS.batch_size_train,bs_val=ARGS.batch_size_val,temp=ARGS.temp).cuda()
+    cluster_net = ClusterNet(nc,writer=writer,bs_train=ARGS.batch_size_train,bs_val=ARGS.batch_size_val,temp=ARGS.temp,arch=ARGS.arch).cuda()
     cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
