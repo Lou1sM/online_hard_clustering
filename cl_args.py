@@ -1,16 +1,13 @@
 import argparse
-import sys
 
 
 def get_cl_args():
     parser = argparse.ArgumentParser()
     train_type_group = parser.add_mutually_exclusive_group()
     train_type_group.add_argument('--prob',action='store_true')
-    train_type_group.add_argument('--prob_approx',action='store_true')
     train_type_group.add_argument('--kl',action='store_true')
     train_type_group.add_argument('--parallel',action='store_true')
     train_type_group.add_argument('--ng',action='store_true')
-    train_type_group.add_argument('--entropy',action='store_true')
     train_type_group.add_argument('--iterative',action='store_true')
     train_type_group.add_argument('--direct_assign',action='store_true')
     train_type_group.add_argument('--no_cluster_loss',action='store_true')
@@ -20,7 +17,6 @@ def get_cl_args():
     dset_group.add_argument('--c100',action='store_true')
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
-    parser.add_argument('--eve',action='store_true')
     parser.add_argument('--warm_start',action='store_true')
     parser.add_argument('--db_at',type=int,default=-1)
     parser.add_argument('--nc',type=int,default=10)

@@ -3,10 +3,7 @@ import datasets
 from scipy.stats import entropy as np_entropy
 from torch.utils.tensorboard import SummaryWriter
 from dl_utils.label_funcs import label_counts, accuracy
-import torchvision
-from torchvision.transforms import Compose, Normalize, ToTensor
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.distributions import Categorical
@@ -15,23 +12,6 @@ from pdb import set_trace
 import numpy as np
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 
-
-class Net(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 10)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1) # flatten all dimensions except batch
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
 
 class ClusterNet(nn.Module):
     def __init__(self,nc,bs_train,bs_val,writer,temp,arch):
@@ -49,7 +29,6 @@ class ClusterNet(nn.Module):
 
         self.centroids = torch.randn(nc,1000,requires_grad=True,device='cuda')
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=1.)
-
         self.cluster_dists = None
         self.cluster_counts = torch.zeros(nc,device='cuda').int()
         self.raw_counts = torch.zeros(nc,device='cuda').int()
@@ -61,13 +40,11 @@ class ClusterNet(nn.Module):
 
         self.training = True
 
-    #@Override
     def train(self):
         self.training = True
         self.net.train()
         self.centroids.requires_grad = True
 
-    #@Override
     def eval(self):
         self.training = False
         self.net.eval()
@@ -104,7 +81,7 @@ class ClusterNet(nn.Module):
         else:
             self.assign_batch_probabilistic()
 
-        if not ARGS.prob:
+        if ARGS.ng or ARGS.sinkhorn or ARGS.kl:
             for ass in self.batch_assignments:
                 self.cluster_counts[ass] += 1
         for ass in self.cluster_dists.argmin(axis=1):
@@ -241,7 +218,6 @@ class ClusterNet(nn.Module):
     def test_epoch_unsupervised(self,testloader):
         self.eval()
         preds = []
-        set_trace()
         for i,data in enumerate(testloader):
             images, labels = data
             self(images.cuda())
@@ -277,27 +253,6 @@ elif ARGS.c100:
 else:
     dataset = datasets.get_cifar10(ARGS.test_level)
     nc = 10
-
-
-#get_dset_fn = torchvision.datasets.CIFAR100 if ARGS.C100 else torchvision.datasets.CIFAR10
-#transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
-
-#testset = get_dset_fn(root='./data', train=False, download=True, transform=transform)
-#if ARGS.test:
-#    trainset = testset
-#    trainset.data = trainset.data[:1000]
-#    trainset.targets = trainset.targets[:1000]
-#elif ARGS.semitest:
-#    trainset = testset
-#    rand_idxs = torch.randint(len(trainset),size=(10000,))
-#    trainset.data = trainset.data[rand_idxs]
-#    trainset.targets = torch.tensor(trainset.targets)[rand_idxs].tolist()
-#else:
-#    trainset = torchvision.datasets.CIFAR10(root='./data',train=True,download=True,transform=transform)
-#
-#classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-#trainset.data = np.concatenate([trainset.data,testset.data])
-#trainset.targets = np.concatenate([trainset.targets,testset.targets])
 
 writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
