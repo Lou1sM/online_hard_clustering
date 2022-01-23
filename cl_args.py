@@ -18,6 +18,7 @@ def get_cl_args():
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--warm_start',action='store_true')
+    parser.add_argument('--constrained_eval',action='store_true')
     parser.add_argument('--db_at',type=int,default=-1)
     parser.add_argument('--nc',type=int,default=10)
     parser.add_argument('--epochs',type=int,default=1)

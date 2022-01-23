@@ -17,7 +17,7 @@ class CifarLikeDataset(data.Dataset):
 
 def get_cifar10(test):
     transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
-    testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    testset = torchvision.datasets.CIFAR10(root='./cifar10_data', train=False, download=True, transform=transform)
     if test==2:
         trainset = testset
         trainset.data = trainset.data[:1000]
@@ -39,8 +39,8 @@ def get_imagenet_tiny(test):
     data_for_each_class = []
     labels_for_each_class = []
     for class_idx in range(200):
-        np_class_data = np.load(join('tiny-imagenet/np_data',f'{class_idx}.npy'))
-        np_class_labels = np.load(join('tiny-imagenet/np_data',f'{class_idx}_labels.npy'))
+        np_class_data = np.load(join('tiny-imagenet-200/np_data',f'{class_idx}.npy'))
+        np_class_labels = np.load(join('tiny-imagenet-200/np_data',f'{class_idx}_labels.npy'))
         if test == 1:
             np_class_data = np_class_data[:50]
             np_class_labels = np_class_labels[:50]

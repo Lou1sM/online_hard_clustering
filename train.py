@@ -145,7 +145,7 @@ class ClusterNet(nn.Module):
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         cost_table = flat_x/(2*ARGS.sigma)
         had_repeats = False
-        if not self.training:
+        if not self.training and not ARGS.constrained_eval:
             self.batch_assignments = self.cluster_dists.argmin(axis=1)
             return
         assign_iter = 0
@@ -181,7 +181,9 @@ class ClusterNet(nn.Module):
             if i % 10 == 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.cluster_counts):
-                        print(f"{k} constrained: {v.item()}\traw: {self.raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
+                        if (rc := self.raw_counts[k].item()) == 0:
+                            continue
+                        print(f"{k} constrained: {v.item()}\traw: {rc}\tsoft: {self.soft_counts[k].item():.3f}")
                 print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
                 running_loss = 0.0
             running_loss += self.cluster_loss.item()
