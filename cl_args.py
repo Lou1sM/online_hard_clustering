@@ -22,12 +22,13 @@ def get_cl_args():
     parser.add_argument('--constrained_eval',action='store_true')
     parser.add_argument('--db_at',type=int,default=-1)
     parser.add_argument('--nc',type=int,default=10)
+    parser.add_argument('--nz',type=int,default=128)
     parser.add_argument('--epochs',type=int,default=1)
     parser.add_argument('--temp',type=float,default=1.)
     parser.add_argument('--sigma',type=float,default=5.)
     parser.add_argument('--track_counts',action='store_true')
     parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
-    parser.add_argument('--arch',type=str,choices=['alex','res'],default='alex')
+    parser.add_argument('--arch',type=str,choices=['alex','res','simp'],default='alex')
     ARGS = parser.parse_args()
     return ARGS
 

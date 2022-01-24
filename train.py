@@ -14,30 +14,47 @@ from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 
 
 class ClusterNet(nn.Module):
-    def __init__(self,nc,bs_train,bs_val,writer,temp,arch):
+    def __init__(self,ARGS):
         super().__init__()
+        self.bs_train = ARGS.batch_size_train
+        self.bs_val = ARGS.batch_size_val
+        self.nc = ARGS.nc
+        self.nz = ARGS.nz
+
         self.conv1 = nn.Conv2d(3, 6, 5)
-        if arch == 'alex':
+        if ARGS.arch == 'alex':
             self.net = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=False)
-        if arch == 'res':
+        if ARGS.arch == 'res':
             self.net = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False)
-        self.net.features[0].stride=(1,1)
+            self.net.fc.weight.data = self.net.fc.weight.data[:self.nz]
+            self.net.fc.bias.data = self.net.fc.bias.data[:self.nz]
+            self.net.fc.out_features = self.nz
+        elif ARGS.arch == 'simp':
+            self.net = nn.Sequential(
+                nn.Conv2d(3, 6, 5),
+                nn.BatchNorm2d(6),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2),
+                nn.Conv2d(6, 16, 5),
+                nn.BatchNorm2d(16),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2),
+                nn.Flatten(1),
+                nn.Linear(16 * 5 * 5, self.nz),
+                )
+
         self.opt = optim.Adam(self.net.parameters())
 
-        self.bs_train = bs_train
-        self.bs_val = bs_val
-        self.nc = nc
-
-        self.centroids = torch.randn(nc,1000,requires_grad=True,device='cuda')
-        self.ng_opt = optim.Adam([{'params':self.centroids}],lr=1.)
+        self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda')
+        self.ng_opt = optim.Adam([{'params':self.centroids}],lr=1e-3)
         self.cluster_dists = None
-        self.cluster_counts = torch.zeros(nc,device='cuda').int()
-        self.raw_counts = torch.zeros(nc,device='cuda').int()
-        self.total_soft_counts = torch.zeros(nc,device='cuda')
+        self.cluster_counts = torch.zeros(ARGS.nc,device='cuda').int()
+        self.raw_counts = torch.zeros(ARGS.nc,device='cuda').int()
+        self.total_soft_counts = torch.zeros(ARGS.nc,device='cuda')
 
         self.writer = writer
         self.epoch_num = -1
-        self.temp = temp
+        self.temp = ARGS.temp
 
         self.training = True
 
@@ -182,7 +199,6 @@ class ClusterNet(nn.Module):
             if i % 10 == 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.cluster_counts):
-                        set_trace()
                         if (rc := self.raw_counts[k].item()) == 0:
                             continue
                         print(f"{k} constrained: {v.item()}\traw: {rc}\tsoft: {self.soft_counts[k].item():.3f}")
@@ -263,5 +279,5 @@ else:
 
 writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
-    cluster_net = ClusterNet(nc,writer=writer,bs_train=ARGS.batch_size_train,bs_val=ARGS.batch_size_val,temp=ARGS.temp,arch=ARGS.arch).cuda()
+    cluster_net = ClusterNet(ARGS).cuda()
     cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
