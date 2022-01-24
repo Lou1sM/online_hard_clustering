@@ -1,6 +1,8 @@
 import argparse
+import get_datasets
 
 
+RELEVANT_ARGS = []
 def get_cl_args():
     parser = argparse.ArgumentParser()
     train_type_group = parser.add_mutually_exclusive_group()
@@ -16,6 +18,7 @@ def get_cl_args():
     dset_group.add_argument('--imt',action='store_true')
     dset_group.add_argument('--c100',action='store_true')
     dset_group.add_argument('--svhn',action='store_true')
+    dset_group.add_argument('--stl',action='store_true')
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--warm_start',action='store_true')
@@ -28,8 +31,27 @@ def get_cl_args():
     parser.add_argument('--sigma',type=float,default=5.)
     parser.add_argument('--track_counts',action='store_true')
     parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
-    parser.add_argument('--arch',type=str,choices=['alex','res','simp'],default='alex')
+    parser.add_argument('--arch',type=str,choices=['alex','res','simp'],default='res')
     ARGS = parser.parse_args()
     return ARGS
 
-RELEVANT_ARGS = []
+
+def get_cl_args_and_dset():
+    args = get_cl_args()
+    if args.imt:
+        dataset = get_datasets.get_imagenet_tiny(args.test_level)
+        args.nc = 200
+    elif args.svhn:
+        dataset = get_datasets.get_svhn(args.test_level)
+        args.nc = 10
+    elif args.stl:
+        dataset = get_datasets.get_stl(args.test_level)
+        args.nc = 10
+    elif args.c100:
+        dataset = get_datasets.get_cifar100(args.test_level)
+        args.nc = 100
+    else:
+        dataset = get_datasets.get_cifar10(args.test_level)
+        args.nc = 10
+
+    return args, dataset

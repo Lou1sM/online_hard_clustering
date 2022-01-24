@@ -48,6 +48,20 @@ def get_svhn(is_test_level):
     torch_svhn_func_test = wrapper(torch_svhn_func_test_)
     return get_torch_available_dset(torch_svhn_func_train,torch_svhn_func_test,is_test_level)
 
+def get_stl(is_test_level):
+    transform = Compose([ToTensor(),Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    data_dir = './dataset/stl_data'
+    def wrapper(dset_func):
+        def inner():
+            dset = dset_func()
+            return CifarLikeDataset(np.transpose(dset.data,(0,3,2,1)),dset.labels,transform)
+        return inner
+    torch_stl_func_train_ = partial(torchvision.datasets.STL10,root=data_dir,split='train',transform=transform,download=True)
+    torch_stl_func_test_ = partial(torchvision.datasets.STL10,root=data_dir,split='test',transform=transform,download=True)
+    torch_stl_func_train = wrapper(torch_stl_func_train_)
+    torch_stl_func_test = wrapper(torch_stl_func_test_)
+    return get_torch_available_dset(torch_stl_func_train,torch_stl_func_test,is_test_level)
+
 def get_torch_available_dset(torch_dset_func_train,torch_dset_func_test,is_test_level):
     #testset = torch_dset_func(root=data_dir, train=False, download=True, transform=transform)
     testset = torch_dset_func_test()

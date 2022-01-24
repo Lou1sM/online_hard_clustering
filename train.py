@@ -1,5 +1,4 @@
 import torch
-import get_datasets
 from scipy.stats import entropy as np_entropy
 from torch.utils.tensorboard import SummaryWriter
 from dl_utils.label_funcs import label_counts, accuracy
@@ -199,9 +198,9 @@ class ClusterNet(nn.Module):
             if i % 10 == 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.cluster_counts):
-                        if (rc := self.raw_counts[k].item()) == 0:
-                            continue
-                        print(f"{k} constrained: {v.item()}\traw: {rc}\tsoft: {self.soft_counts[k].item():.3f}")
+                        #if (rc := self.raw_counts[k].item()) == 0:
+                            #continue
+                        print(f"{k} constrained: {v.item()}\traw: {self.raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
                 print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
                 running_loss = 0.0
             running_loss += self.cluster_loss.item()
@@ -263,19 +262,7 @@ def sinkhorn(scores, eps=0.05, niters=3):
         Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
     return (Q / torch.sum(Q, dim=0, keepdim=True)).T
 
-ARGS = cl_args.get_cl_args()
-if ARGS.imt:
-    dataset = get_datasets.get_imagenet_tiny(ARGS.test_level)
-    nc = 200
-elif ARGS.svhn:
-    dataset = get_datasets.get_svhn(ARGS.test_level)
-    nc = 10
-elif ARGS.c100:
-    dataset = get_datasets.get_cifar100(ARGS.test_level)
-    nc = 100
-else:
-    dataset = get_datasets.get_cifar10(ARGS.test_level)
-    nc = 10
+ARGS,dataset = cl_args.get_cl_args_and_dset()
 
 writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
