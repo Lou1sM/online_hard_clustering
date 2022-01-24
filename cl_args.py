@@ -15,6 +15,7 @@ def get_cl_args():
     dset_group = parser.add_mutually_exclusive_group()
     dset_group.add_argument('--imt',action='store_true')
     dset_group.add_argument('--c100',action='store_true')
+    dset_group.add_argument('--svhn',action='store_true')
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--warm_start',action='store_true')
@@ -26,7 +27,7 @@ def get_cl_args():
     parser.add_argument('--sigma',type=float,default=5.)
     parser.add_argument('--track_counts',action='store_true')
     parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
-    parser.add_argument('--arch',type=str,choices=['alex','res'])
+    parser.add_argument('--arch',type=str,choices=['alex','res'],default='alex')
     ARGS = parser.parse_args()
     return ARGS
 
