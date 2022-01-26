@@ -20,21 +20,32 @@ class CifarLikeDataset(data.Dataset):
             batch_x = self.transform(batch_x)
         return batch_x, batch_y
 
-def get_cifar10(is_test_level):
+def get_cifar10(test_level):
     transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
     data_dir = './dataset/cifar10_data'
     torch_cifar10_func_train = partial(torchvision.datasets.CIFAR10,root=data_dir,train=True,transform=transform,download=True)
     torch_cifar10_func_test = partial(torchvision.datasets.CIFAR10,root=data_dir,train=False,transform=transform,download=True)
-    return get_torch_available_dset(torch_cifar10_func_train,torch_cifar10_func_test,is_test_level)
+    return get_torch_available_dset(torch_cifar10_func_train,torch_cifar10_func_test,test_level)
 
-def get_cifar100(is_test_level):
+def get_cifar100(test_level):
     transform = Compose([ToTensor(),Normalize((0.4914, 0.4822, 0.4465), (0.2675, 0.2565, 0.2761))])
     data_dir = './dataset/cifar100_data'
     torch_cifar100_func_train = partial(torchvision.datasets.CIFAR100,root=data_dir,train=True,transform=transform,download=True)
     torch_cifar100_func_test = partial(torchvision.datasets.CIFAR100,root=data_dir,train=False,transform=transform,download=True)
-    return get_torch_available_dset(torch_cifar100_func_train,torch_cifar100_func_test,is_test_level)
+    return get_torch_available_dset(torch_cifar100_func_train,torch_cifar100_func_test,test_level)
 
-def get_svhn(is_test_level):
+def get_fashmnist(test_level):
+    add_colour_dim = lambda t: t.unsqueeze(0)
+    transform = Compose([ToTensor()])
+    data_dir = './dataset/fashmnist_data'
+    dset = torchvision.datasets.FashionMNIST(root=data_dir,train=True,transform=transform)
+    dl = data.DataLoader(dset,128)
+    for xb,yb in dl:
+        print(xb.shape)
+        break
+    return dset
+
+def get_svhn(test_level):
     transform = Compose([ToTensor(),Normalize((0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970))])
     data_dir = './dataset/svhn_data'
     def wrapper(dset_func):
@@ -46,9 +57,9 @@ def get_svhn(is_test_level):
     torch_svhn_func_test_ = partial(torchvision.datasets.SVHN,root=data_dir,split='test',transform=transform,download=True)
     torch_svhn_func_train = wrapper(torch_svhn_func_train_)
     torch_svhn_func_test = wrapper(torch_svhn_func_test_)
-    return get_torch_available_dset(torch_svhn_func_train,torch_svhn_func_test,is_test_level)
+    return get_torch_available_dset(torch_svhn_func_train,torch_svhn_func_test,test_level)
 
-def get_stl(is_test_level):
+def get_stl(test_level):
     transform = Compose([ToTensor(),Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     data_dir = './dataset/stl_data'
     def wrapper(dset_func):
@@ -60,17 +71,17 @@ def get_stl(is_test_level):
     torch_stl_func_test_ = partial(torchvision.datasets.STL10,root=data_dir,split='test',transform=transform,download=True)
     torch_stl_func_train = wrapper(torch_stl_func_train_)
     torch_stl_func_test = wrapper(torch_stl_func_test_)
-    return get_torch_available_dset(torch_stl_func_train,torch_stl_func_test,is_test_level)
+    return get_torch_available_dset(torch_stl_func_train,torch_stl_func_test,test_level)
 
-def get_torch_available_dset(torch_dset_func_train,torch_dset_func_test,is_test_level):
+def get_torch_available_dset(torch_dset_func_train,torch_dset_func_test,test_level):
     #testset = torch_dset_func(root=data_dir, train=False, download=True, transform=transform)
     testset = torch_dset_func_test()
-    if is_test_level==2:
+    if test_level==2:
         trainset = testset
         trainset.data = trainset.data[:1000]
         #setattr(trainset,lab_name,getattr(trainset,lab_name)[:1000])
         trainset.targets = trainset.targets[:1000]
-    elif is_test_level==1:
+    elif test_level==1:
         trainset = testset
         rand_idxs = torch.randint(len(trainset),size=(10000,))
         trainset.data = trainset.data[rand_idxs]

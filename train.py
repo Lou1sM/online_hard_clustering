@@ -20,6 +20,15 @@ class ClusterNet(nn.Module):
         self.nc = ARGS.nc
         self.nz = ARGS.nz
 
+        if ARGS.imt:
+            out_conv_shape = 13
+        elif ARGS.stl:
+            out_conv_shape = 21
+        elif ARGS.fashmnist:
+            out_conv_shape = 4
+        else:
+            out_conv_shape = 5
+        nc = 1 if ARGS.fashmnist else 3
         self.conv1 = nn.Conv2d(3, 6, 5)
         if ARGS.arch == 'alex':
             self.net = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=False)
@@ -30,7 +39,7 @@ class ClusterNet(nn.Module):
             self.net.fc.out_features = self.nz
         elif ARGS.arch == 'simp':
             self.net = nn.Sequential(
-                nn.Conv2d(3, 6, 5),
+                nn.Conv2d(nc, 6, 5),
                 nn.BatchNorm2d(6),
                 nn.ReLU(),
                 nn.MaxPool2d(2, 2),
@@ -39,7 +48,7 @@ class ClusterNet(nn.Module):
                 nn.ReLU(),
                 nn.MaxPool2d(2, 2),
                 nn.Flatten(1),
-                nn.Linear(16 * 5 * 5, self.nz),
+                nn.Linear(16 * out_conv_shape * out_conv_shape, self.nz),
                 )
 
         self.opt = optim.Adam(self.net.parameters())
@@ -102,6 +111,7 @@ class ClusterNet(nn.Module):
             for ass in self.batch_assignments:
                 self.cluster_counts[ass] += 1
         for ass in self.cluster_dists.argmin(axis=1):
+            #self.cluster_counts.index_put(indices=[self.batch_assignments],values=torch.tensor(1),accumulate=True)
             self.raw_counts[ass]+=1
         if not ARGS.sinkhorn or ARGS.ng:
             self.soft_counts = (-self.cluster_dists).softmax(axis=1).sum(axis=0).detach()
@@ -115,8 +125,8 @@ class ClusterNet(nn.Module):
         self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
 
     def assign_batch_kl(self):
-        self.cluster_loss = 10*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
-        self.cluster_loss += Categorical(self.cluster_dists).entropy().mean()
+        self.cluster_loss = 100*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
+        self.cluster_loss += 0.1*Categorical(self.cluster_dists).entropy().mean()
         self.batch_assignments = self.cluster_dists.argmin(axis=1)
 
     def assign_batch_parallel(self):
@@ -195,7 +205,7 @@ class ClusterNet(nn.Module):
             self.opt.step()
             self.ng_opt.step()
             self.opt.zero_grad(); self.ng_opt.zero_grad()
-            if i % 10 == 0:
+            if i % 10 == 0 and i > 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.cluster_counts):
                         #if (rc := self.raw_counts[k].item()) == 0:

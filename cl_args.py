@@ -19,6 +19,7 @@ def get_cl_args():
     dset_group.add_argument('--c100',action='store_true')
     dset_group.add_argument('--svhn',action='store_true')
     dset_group.add_argument('--stl',action='store_true')
+    dset_group.add_argument('--fashmnist',action='store_true')
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--warm_start',action='store_true')
@@ -39,18 +40,23 @@ def get_cl_args():
 def get_cl_args_and_dset():
     args = get_cl_args()
     if args.imt:
+        print('using dset imt')
         dataset = get_datasets.get_imagenet_tiny(args.test_level)
         args.nc = 200
-    elif args.svhn:
-        dataset = get_datasets.get_svhn(args.test_level)
+    elif args.fashmnist:
+        print('using dset fashmnist')
+        dataset = get_datasets.get_fashmnist(args.test_level)
         args.nc = 10
     elif args.stl:
+        print('using dset stl')
         dataset = get_datasets.get_stl(args.test_level)
         args.nc = 10
     elif args.c100:
+        print('using dset c100')
         dataset = get_datasets.get_cifar100(args.test_level)
         args.nc = 100
     else:
+        print('using dset c10')
         dataset = get_datasets.get_cifar10(args.test_level)
         args.nc = 10
 
