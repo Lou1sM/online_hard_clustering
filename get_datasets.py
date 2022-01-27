@@ -40,9 +40,6 @@ def get_fashmnist(test_level):
     data_dir = './dataset/fashmnist_data'
     dset = torchvision.datasets.FashionMNIST(root=data_dir,train=True,transform=transform)
     dl = data.DataLoader(dset,128)
-    for xb,yb in dl:
-        print(xb.shape)
-        break
     return dset
 
 def get_svhn(test_level):
@@ -74,27 +71,21 @@ def get_stl(test_level):
     return get_torch_available_dset(torch_stl_func_train,torch_stl_func_test,test_level)
 
 def get_torch_available_dset(torch_dset_func_train,torch_dset_func_test,test_level):
-    #testset = torch_dset_func(root=data_dir, train=False, download=True, transform=transform)
     testset = torch_dset_func_test()
     if test_level==2:
         trainset = testset
         trainset.data = trainset.data[:1000]
-        #setattr(trainset,lab_name,getattr(trainset,lab_name)[:1000])
         trainset.targets = trainset.targets[:1000]
     elif test_level==1:
         trainset = testset
         rand_idxs = torch.randint(len(trainset),size=(10000,))
         trainset.data = trainset.data[rand_idxs]
-        #setattr(trainset,lab_name,getattr(trainset,lab_name)[rand_idxs])
         trainset.targets = torch.tensor(trainset.targets)[rand_idxs].tolist()
     else:
         trainset = torch_dset_func_train()
 
     trainset.data = np.concatenate([trainset.data,testset.data])
     trainset.targets = np.concatenate([trainset.targets,testset.targets])
-    #train_labs = getattr(trainset,lab_name)
-    #test_labs = getattr(testset,lab_name)
-    #setattr(trainset,lab_name, np.concatenate([train_labs,test_labs]))
     return trainset
 
 def get_imagenet_tiny(test):

@@ -32,7 +32,7 @@ def get_cl_args():
     parser.add_argument('--sigma',type=float,default=5.)
     parser.add_argument('--track_counts',action='store_true')
     parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
-    parser.add_argument('--arch',type=str,choices=['alex','res','simp'],default='res')
+    parser.add_argument('--arch',type=str,choices=['alex','res','simp'],default='simp')
     ARGS = parser.parse_args()
     return ARGS
 
