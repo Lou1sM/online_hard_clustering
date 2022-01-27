@@ -125,7 +125,7 @@ class ClusterNet(nn.Module):
         self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
 
     def assign_batch_kl(self):
-        self.cluster_loss = 100*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
+        self.cluster_loss = 10*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
         self.cluster_loss += 0.1*Categorical(self.cluster_dists).entropy().mean()
         self.batch_assignments = self.cluster_dists.argmin(axis=1)
 
@@ -230,7 +230,10 @@ class ClusterNet(nn.Module):
                 with torch.no_grad():
                     pred_array = self.test_epoch_unsupervised(testloader)
                 num_of_each_label = label_counts(pred_array)
-                epoch_hard_counts = np.array(list(num_of_each_label.values()))
+                epoch_hard_counts = np.zeros(self.nc)
+                for ass,num in num_of_each_label.items():
+                    epoch_hard_counts[ass] = num
+                #epoch_hard_counts = np.array(list(num_of_each_label.values()))
                 epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
                 acc = accuracy(pred_array,np.array(gt))
                 nmi = normalized_mutual_info_score(pred_array,np.array(gt))
