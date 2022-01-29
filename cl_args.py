@@ -12,6 +12,7 @@ def get_cl_args():
     train_type_group.add_argument('--ng',action='store_true')
     train_type_group.add_argument('--iterative',action='store_true')
     train_type_group.add_argument('--direct_assign',action='store_true')
+    train_type_group.add_argument('--no_reg',action='store_true')
     train_type_group.add_argument('--no_cluster_loss',action='store_true')
     train_type_group.add_argument('--sinkhorn',action='store_true')
     dset_group = parser.add_mutually_exclusive_group()

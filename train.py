@@ -1,6 +1,5 @@
 import torch
 from scipy.stats import entropy as np_entropy
-from torch.utils.tensorboard import SummaryWriter
 from dl_utils.label_funcs import label_counts, accuracy
 import torch.nn as nn
 import torch.optim as optim
@@ -60,7 +59,6 @@ class ClusterNet(nn.Module):
         self.raw_counts = torch.zeros(ARGS.nc,device='cuda').int()
         self.total_soft_counts = torch.zeros(ARGS.nc,device='cuda')
 
-        self.writer = writer
         self.epoch_num = -1
         self.temp = ARGS.temp
 
@@ -104,6 +102,9 @@ class ClusterNet(nn.Module):
             self.assign_batch_kl()
         elif ARGS.sinkhorn:
             self.assign_batch_sinkhorn()
+        elif ARGS.no_reg:
+            min_dists, self.batch_assignments  = self.cluster_dists.min(axis=1)
+            self.cluster_loss = min_dists.mean()
         else:
             self.assign_batch_probabilistic()
 
@@ -200,7 +201,6 @@ class ClusterNet(nn.Module):
             inputs, labels = data
             if i==ARGS.db_at: set_trace()
             self(inputs.cuda())
-            writer.add_scalar('Loss',self.cluster_loss,i + len(trainloader.dataset)*epoch_num)
             self.cluster_loss.backward()
             self.opt.step()
             self.ng_opt.step()
@@ -277,7 +277,6 @@ def sinkhorn(scores, eps=0.05, niters=3):
 
 ARGS,dataset = cl_args.get_cl_args_and_dset()
 
-writer = SummaryWriter()
 with torch.autograd.set_detect_anomaly(True):
     cluster_net = ClusterNet(ARGS).cuda()
     cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
