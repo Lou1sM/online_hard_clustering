@@ -55,8 +55,8 @@ class ClusterNet(nn.Module):
         self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda')
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=1e-3)
         self.cluster_dists = None
-        self.cluster_counts = torch.zeros(ARGS.nc,device='cuda').int()
-        self.raw_counts = torch.zeros(ARGS.nc,device='cuda').int()
+        self.cluster_counts = torch.zeros(ARGS.nc,device='cuda').long()
+        self.raw_counts = torch.zeros(ARGS.nc,device='cuda').long()
         self.total_soft_counts = torch.zeros(ARGS.nc,device='cuda')
 
         self.epoch_num = -1
@@ -75,8 +75,8 @@ class ClusterNet(nn.Module):
         self.centroids.requires_grad = False
 
     def reset_scores(self):
-        self.cluster_counts = torch.zeros(self.nc,device='cuda').int()
-        self.raw_counts = torch.zeros(self.nc,device='cuda').int()
+        self.cluster_counts = torch.zeros(self.nc,device='cuda').long()
+        self.raw_counts = torch.zeros(self.nc,device='cuda').long()
 
     def init_keys_as_dpoints(self,dloader):
         self.eval()
@@ -108,12 +108,9 @@ class ClusterNet(nn.Module):
         else:
             self.assign_batch_probabilistic()
 
+        self.raw_counts.index_put_(indices=[self.cluster_dists.argmin(axis=1)],values=torch.ones_like(self.batch_assignments),accumulate=True)
         if ARGS.ng or ARGS.sinkhorn or ARGS.kl:
-            for ass in self.batch_assignments:
-                self.cluster_counts[ass] += 1
-        for ass in self.cluster_dists.argmin(axis=1):
-            #self.cluster_counts.index_put(indices=[self.batch_assignments],values=torch.tensor(1),accumulate=True)
-            self.raw_counts[ass]+=1
+            self.cluster_counts.index_put_(indices=[self.batch_assignments],values=torch.ones_like(self.batch_assignments),accumulate=True)
         if not ARGS.sinkhorn or ARGS.ng:
             self.soft_counts = (-self.cluster_dists).softmax(axis=1).sum(axis=0).detach()
         self.total_soft_counts += self.soft_counts
@@ -123,12 +120,19 @@ class ClusterNet(nn.Module):
             soft_assignments = sinkhorn(-self.cluster_dists,eps=.5,niters=15)
         self.batch_assignments = soft_assignments.argmin(axis=1)
         self.soft_counts = soft_assignments.sum(axis=0).detach()
-        self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
+        if ARGS.soft_train:
+            softmax_probs = (-self.cluster_dists.detach()).softmax(axis=1)
+            self.cluster_loss = (self.cluster_dists * softmax_probs).mean()
+        else:
+            self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
 
     def assign_batch_kl(self):
-        self.cluster_loss = 10*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
-        self.cluster_loss += 0.1*Categorical(self.cluster_dists).entropy().mean()
         self.batch_assignments = self.cluster_dists.argmin(axis=1)
+        self.cluster_loss = 100*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
+        if ARGS.kl_cent:
+            self.cluster_loss +=.1*self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
+        else:
+            self.cluster_loss += .1*Categorical(self.cluster_dists).entropy().mean()
 
     def assign_batch_parallel(self):
         if not self.training:
