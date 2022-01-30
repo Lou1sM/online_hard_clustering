@@ -1,4 +1,5 @@
 import torch
+from time import time
 from scipy.stats import entropy as np_entropy
 from dl_utils.label_funcs import label_counts, accuracy
 import torch.nn as nn
@@ -94,10 +95,8 @@ class ClusterNet(nn.Module):
     def assign_batch(self):
         if ARGS.ng:
             self.cluster_loss,self.batch_assignments = neural_gas_loss(.1*self.cluster_dists+(self.cluster_counts+1).log(),self.temp)
-        elif ARGS.iterative:
-            self.assign_batch_iterative()
-        elif ARGS.parallel:
-            self.assign_batch_parallel()
+        elif ARGS.var:
+            self.assign_batch_var()
         elif ARGS.kl:
             self.assign_batch_kl()
         elif ARGS.sinkhorn:
@@ -126,6 +125,15 @@ class ClusterNet(nn.Module):
         else:
             self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
 
+    def assign_batch_var(self):
+        self.batch_assignments = self.cluster_dists.argmin(axis=1)
+        #self.cluster_loss = 10*(self.cluster_dists**2).sum()
+        if ARGS.var_improved:
+            self.cluster_loss = 10*self.cluster_dists.mean(axis=0).var()
+        else:
+            self.cluster_loss = 10*(self.cluster_dists.mean(axis=0)**2).mean()
+        self.cluster_loss +=.1*self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
+
     def assign_batch_kl(self):
         self.batch_assignments = self.cluster_dists.argmin(axis=1)
         self.cluster_loss = 100*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
@@ -133,42 +141,6 @@ class ClusterNet(nn.Module):
             self.cluster_loss +=.1*self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
         else:
             self.cluster_loss += .1*Categorical(self.cluster_dists).entropy().mean()
-
-    def assign_batch_parallel(self):
-        if not self.training:
-            self.batch_assignments = self.cluster_dists.argmin(axis=1)
-            return
-        neg_cost_table = 0.1*self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
-        self.batch_assignments = torch.arange(self.nc).tile(self.bs//self.nc)
-        leftovers = torch.arange(self.bs % self.nc)
-        self.batch_assignments = torch.cat([self.batch_assignments,leftovers]).cuda()
-        tentative_counts = torch.tensor([self.bs/self.nc]).tile(self.nc).cuda()
-        num_passes = 50
-        c = self.nc
-        for _ in range(num_passes):
-            for chunk_start_idx in range(0,self.bs,c):
-                chunk = neg_cost_table[chunk_start_idx:chunk_start_idx+c]
-                chunk_assignments = (chunk+(tentative_counts+1).log()).argmin(axis=1)
-                for ass in chunk_assignments:
-                    tentative_counts[ass] += 1
-                for ass in self.batch_assignments[chunk_start_idx:chunk_start_idx+c]:
-                    tentative_counts[ass] -= 1
-                    assert tentative_counts[ass] >= -1
-                assert (tentative_counts.sum() - self.bs).abs() < 1e-3
-                self.batch_assignments[chunk_start_idx:chunk_start_idx+c] = chunk_assignments
-        self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
-
-    def assign_batch_iterative(self):
-        flat_x = self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
-        self.batch_assignments = []
-        cost_table = 0.1*flat_x
-        if not self.training:
-            return torch.zeros_like(self.cluster_dists[:,0]), self.cluster_dists.argmin(axis=1)
-        for assign_row in range(len(flat_x)):
-            new_assigned_key = (assign_row+(self.cluster_counts+1).log()).argmin()
-            self.batch_assignments.append(new_assigned_key)
-            self.cluster_counts[new_assigned_key] += 1
-        self.cluster_loss = cost_table[torch.arange(self.bs),self.batch_assignments].mean()
 
     def assign_batch_probabilistic(self):
         flat_x = self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
@@ -242,10 +214,11 @@ class ClusterNet(nn.Module):
                 acc = accuracy(pred_array,np.array(gt))
                 nmi = normalized_mutual_info_score(pred_array,np.array(gt))
                 ari = adjusted_rand_score(pred_array,np.array(gt))
-                hce = np_entropy(epoch_hard_counts)
-                sce = np_entropy(epoch_soft_counts)
+                hce = np_entropy(epoch_hard_counts,base=2)
+                sce = np_entropy(epoch_soft_counts,base=2)
                 hcv = epoch_hard_counts.var()/epoch_hard_counts.mean()
                 scv = epoch_soft_counts.var()/epoch_hard_counts.mean()
+                if max(hcv,scv) > len(dset) - len(dset)/self.nc: set_trace()
                 print(num_of_each_label)
                 print(f"Hard counts entropy: {hce:.4f}\tSoft counts entropy: {sce:.4f}")
                 print(f"Hard counts variance: {hcv:.4f}\tSoft counts variance: {scv:.4f}")
@@ -267,7 +240,6 @@ def neural_gas_loss(v,temp):
     sorted_v, assignments_order = torch.sort(v)
     assert (sorted_v**2 * weightings).mean() < ((sorted_v**2).mean() * weightings.mean())
     return (sorted_v**2 * weightings).sum(axis=1), assignments_order[:,0]
-
 def sinkhorn(scores, eps=0.05, niters=3):
     Q = torch.exp(scores / eps).T
     Q /= sum(Q)
