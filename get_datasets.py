@@ -83,9 +83,8 @@ def get_torch_available_dset(torch_dset_func_train,torch_dset_func_test,test_lev
         trainset.targets = torch.tensor(trainset.targets)[rand_idxs].tolist()
     else:
         trainset = torch_dset_func_train()
-
-    trainset.data = np.concatenate([trainset.data,testset.data])
-    trainset.targets = np.concatenate([trainset.targets,testset.targets])
+        trainset.data = np.concatenate([trainset.data,testset.data])
+        trainset.targets = np.concatenate([trainset.targets,testset.targets])
     return trainset
 
 def get_imagenet_tiny(test):
