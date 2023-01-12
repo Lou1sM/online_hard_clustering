@@ -19,6 +19,7 @@ def get_cl_args():
     dset_group.add_argument('--svhn',action='store_true')
     dset_group.add_argument('--stl',action='store_true')
     dset_group.add_argument('--fashmnist',action='store_true')
+    dset_group.add_argument('--tweets',action='store_true')
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--warm_start',action='store_true')
@@ -26,15 +27,18 @@ def get_cl_args():
     parser.add_argument('--db_at',type=int,default=-1)
     parser.add_argument('--nc',type=int,default=10)
     parser.add_argument('--nz',type=int,default=128)
+    parser.add_argument('--hidden_dim',type=int,default=512)
     parser.add_argument('--epochs',type=int,default=1)
     parser.add_argument('--temp',type=float,default=1.)
     parser.add_argument('--sigma',type=float,default=5.)
+    parser.add_argument('--lr',type=float,default=1e-3)
     parser.add_argument('--track_counts',action='store_true')
+    parser.add_argument('--keep_scores',action='store_true')
     parser.add_argument('--soft_train',action='store_true')
     parser.add_argument('--kl_cent',action='store_true')
     parser.add_argument('--var_improved',action='store_true')
     parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
-    parser.add_argument('--arch',type=str,choices=['alex','res','simp'],default='simp')
+    parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc'],default='simp')
     ARGS = parser.parse_args()
     return ARGS
 
@@ -57,6 +61,11 @@ def get_cl_args_and_dset():
         print('using dset c100')
         dataset = get_datasets.get_cifar100(args.test_level)
         args.nc = 100
+    elif args.tweets:
+        print('using dset tweets')
+        dataset = get_datasets.get_tweets(args.test_level)
+        args.nc = 269
+        args.arch = 'fc'
     else:
         print('using dset c10')
         dataset = get_datasets.get_cifar10(args.test_level)

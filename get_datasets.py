@@ -3,22 +3,22 @@ from os.path import join
 import torchvision
 from torch.utils import data
 from torchvision.transforms import Compose, Normalize, ToTensor
-from pdb import set_trace
 import numpy as np
 from functools import partial
+from dl_utils.torch_misc import CifarLikeDataset
 
 
-class CifarLikeDataset(data.Dataset):
-    def __init__(self,x,y,transform=None):
-        self.data, self.targets = x,y
-        self.transform = transform
-        assert len(x) == len(y)
-    def __len__(self): return len(self.data)
-    def __getitem__(self,idx):
-        batch_x, batch_y = self.data[idx], self.targets[idx]
-        if self.transform:
-            batch_x = self.transform(batch_x)
-        return batch_x, batch_y
+#class CifarLikeDataset(data.Dataset):
+#    def __init__(self,x,y,transform=None):
+#        self.data, self.targets = x,y
+#        self.transform = transform
+#        assert len(x) == len(y)
+#    def __len__(self): return len(self.data)
+#    def __getitem__(self,idx):
+#        batch_x, batch_y = self.data[idx], self.targets[idx]
+#        if self.transform:
+#            batch_x = self.transform(batch_x)
+#        return batch_x, batch_y
 
 def get_cifar10(test_level):
     transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
@@ -26,6 +26,11 @@ def get_cifar10(test_level):
     torch_cifar10_func_train = partial(torchvision.datasets.CIFAR10,root=data_dir,train=True,transform=transform,download=True)
     torch_cifar10_func_test = partial(torchvision.datasets.CIFAR10,root=data_dir,train=False,transform=transform,download=True)
     return get_torch_available_dset(torch_cifar10_func_train,torch_cifar10_func_test,test_level)
+
+def get_tweets(test_level):
+    X = np.load('datasets/tweets/roberta_doc_vecs.npy')
+    y = np.load('datasets/tweets/cluster_labels.npy')
+    return CifarLikeDataset(X,y)
 
 def get_cifar100(test_level):
     transform = Compose([ToTensor(),Normalize((0.4914, 0.4822, 0.4465), (0.2675, 0.2565, 0.2761))])

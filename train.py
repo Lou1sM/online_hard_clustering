@@ -1,7 +1,8 @@
 import torch
 from time import time
 from scipy.stats import entropy as np_entropy
-from dl_utils.label_funcs import label_counts, accuracy
+from dl_utils.label_funcs import label_counts, accuracy, get_trans_dict
+from dl_utils.tensor_funcs import cudify
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -19,6 +20,12 @@ class ClusterNet(nn.Module):
         self.bs_val = ARGS.batch_size_val
         self.nc = ARGS.nc
         self.nz = ARGS.nz
+        self.sigma = ARGS.sigma
+        if ARGS.tweets:
+            counts = np.load('datasets/tweets/cluster_label_counts.npy')
+            self.log_prior = np.log(counts/counts.sum())
+        else:
+            self.log_prior = 'uniform'
 
         if ARGS.imt:
             out_conv_shape = 13
@@ -50,6 +57,11 @@ class ClusterNet(nn.Module):
                 nn.Flatten(1),
                 nn.Linear(16 * out_conv_shape * out_conv_shape, self.nz),
                 )
+        elif ARGS.arch == 'fc':
+            self.net = nn.Sequential(
+                nn.Linear(768,ARGS.hidden_dim),
+                nn.ReLU(),
+                nn.Linear(ARGS.hidden_dim,self.nz))
 
         self.opt = optim.Adam(self.net.parameters())
 
@@ -83,6 +95,9 @@ class ClusterNet(nn.Module):
         self.eval()
         inp,targets = next(iter(dloader))
         inp = inp[:self.nc]
+        while len(inp) < self.nc:
+            new_inp,targets = next(iter(dloader))
+            inp = torch.cat([inp,new_inp[:self.nc-len(inp)]])
         sample_feature_vecs = self.net(inp.cuda())
         self.centroids = sample_feature_vecs.clone().detach().requires_grad_(True)
 
@@ -148,6 +163,8 @@ class ClusterNet(nn.Module):
         self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         cost_table = flat_x/(2*ARGS.sigma)
+        if self.log_prior != 'uniform' and self.epoch_num > 10:
+            cost_table -= self.translated_log_prior*self.acc
         had_repeats = False
         if not self.training and not ARGS.constrained_eval:
             self.batch_assignments = self.cluster_dists.argmin(axis=1)
@@ -165,18 +182,20 @@ class ClusterNet(nn.Module):
             assigned_key_order.append(new_vec_idx)
             self.batch_assignments[new_vec_idx] = new_assigned_key
             self.cluster_counts[new_assigned_key] += 1
-            assert cost > 0
+            #assert cost > 0
             assign_iter += 1
         self.cluster_loss = cost_table[torch.arange(self.bs),self.batch_assignments].mean()
 
-    def train_one_epoch(self,trainloader,epoch_num):
+    def train_one_epoch(self,trainloader):
         self.train()
         running_loss = 0.0
+        self.reset_scores()
         for i, data in enumerate(trainloader):
-            self.reset_scores()
-            inputs, labels = data
+            if not ARGS.keep_scores:
+                self.reset_scores()
+            self.batch_inputs, self.batch_labels = data
             if i==ARGS.db_at: set_trace()
-            self(inputs.cuda())
+            self(self.batch_inputs.cuda())
             self.cluster_loss.backward()
             self.opt.step()
             self.ng_opt.step()
@@ -195,11 +214,14 @@ class ClusterNet(nn.Module):
     def train_epochs(self,num_epochs,dset,val_too=True):
         trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
         testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
+        net_backup = self.net
+        best_nmi = 0
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
+            self.epoch_num = epoch_num
             self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
-            self.train_one_epoch(trainloader,epoch_num)
+            self.train_one_epoch(trainloader)
             if val_too:
                 gt = testloader.dataset.targets
                 self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
@@ -211,7 +233,11 @@ class ClusterNet(nn.Module):
                     epoch_hard_counts[ass] = num
                 #epoch_hard_counts = np.array(list(num_of_each_label.values()))
                 epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
-                acc = accuracy(pred_array,np.array(gt))
+                self.trans_dict = get_trans_dict(np.array(gt),pred_array)[0]
+                self.acc = (np.array([self.trans_dict[a] for a in gt])==pred_array).mean()
+                #assert acc == accuracy(pred_array,np.array(gt))
+                idx_array = np.array(list(self.trans_dict.keys())[:-1])
+                self.translated_log_prior = cudify(self.log_prior[idx_array])
                 nmi = normalized_mutual_info_score(pred_array,np.array(gt))
                 ari = adjusted_rand_score(pred_array,np.array(gt))
                 hce = np_entropy(epoch_hard_counts,base=2)
@@ -219,10 +245,15 @@ class ClusterNet(nn.Module):
                 hcv = epoch_hard_counts.var()/epoch_hard_counts.mean()
                 scv = epoch_soft_counts.var()/epoch_hard_counts.mean()
                 if max(hcv,scv) > len(dset) - len(dset)/self.nc: set_trace()
-                print(num_of_each_label)
-                print(f"Hard counts entropy: {hce:.4f}\tSoft counts entropy: {sce:.4f}")
+                print({k:v for k,v in num_of_each_label.items() if v < 5})
+                print(f"Hard counts entropy: {hce:.4f}\tSoft counts entropy: {sce:.4f}",end=' ')
                 print(f"Hard counts variance: {hcv:.4f}\tSoft counts variance: {scv:.4f}")
-                print(f"Epoch: {epoch_num}\tAcc: {acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
+                print(f"Epoch: {epoch_num}\tAcc: {self.acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
+                if nmi > best_nmi:
+                    net_backup = self.net
+                    best_nmi = nmi
+                else:
+                    self.net = net_backup
 
     def test_epoch_unsupervised(self,testloader):
         self.eval()
@@ -251,8 +282,9 @@ def sinkhorn(scores, eps=0.05, niters=3):
         Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
     return (Q / torch.sum(Q, dim=0, keepdim=True)).T
 
-ARGS,dataset = cl_args.get_cl_args_and_dset()
+if __name__ == '__main__':
+    ARGS,dataset = cl_args.get_cl_args_and_dset()
 
-with torch.autograd.set_detect_anomaly(True):
-    cluster_net = ClusterNet(ARGS).cuda()
-    cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
+    with torch.autograd.set_detect_anomaly(True):
+        cluster_net = ClusterNet(ARGS).cuda()
+        cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
