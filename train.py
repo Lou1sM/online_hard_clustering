@@ -1,8 +1,10 @@
-import torch
 from time import time
+from os.path import join
+from copy import deepcopy
 from scipy.stats import entropy as np_entropy
-from dl_utils.label_funcs import label_counts, accuracy, get_trans_dict
+from dl_utils.label_funcs import label_counts, get_trans_dict
 from dl_utils.tensor_funcs import cudify
+from dl_utils.misc import set_experiment_dir, asMinutes
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -10,6 +12,7 @@ from torch.distributions import Categorical
 import cl_args
 from pdb import set_trace
 import numpy as np
+import torch
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 
 
@@ -21,21 +24,21 @@ class ClusterNet(nn.Module):
         self.nc = ARGS.nc
         self.nz = ARGS.nz
         self.sigma = ARGS.sigma
-        if ARGS.tweets:
+        if ARGS.dataset == 'tweets':
             counts = np.load('datasets/tweets/cluster_label_counts.npy')
             self.log_prior = np.log(counts/counts.sum())
         else:
             self.log_prior = 'uniform'
 
-        if ARGS.imt:
+        if ARGS.dataset == 'imt':
             out_conv_shape = 13
-        elif ARGS.stl:
+        elif ARGS.dataset == 'stl':
             out_conv_shape = 21
-        elif ARGS.fashmnist:
+        elif ARGS.dataset == 'fashmnist':
             out_conv_shape = 4
         else:
             out_conv_shape = 5
-        nc = 1 if ARGS.fashmnist else 3
+        nc = 1 if ARGS.dataset == 'fashmnist' else 3
         self.conv1 = nn.Conv2d(3, 6, 5)
         if ARGS.arch == 'alex':
             self.net = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=False)
@@ -66,7 +69,7 @@ class ClusterNet(nn.Module):
         self.opt = optim.Adam(self.net.parameters())
 
         self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda')
-        self.ng_opt = optim.Adam([{'params':self.centroids}],lr=1e-3)
+        self.ng_opt = optim.Adam([{'params':self.centroids}],lr=ARGS.lr)
         self.cluster_dists = None
         self.cluster_counts = torch.zeros(ARGS.nc,device='cuda').long()
         self.raw_counts = torch.zeros(ARGS.nc,device='cuda').long()
@@ -206,54 +209,59 @@ class ClusterNet(nn.Module):
                         #if (rc := self.raw_counts[k].item()) == 0:
                             #continue
                         print(f"{k} constrained: {v.item()}\traw: {self.raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
-                print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
+                if ARGS.verbose:
+                    print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
                 running_loss = 0.0
             running_loss += self.cluster_loss.item()
             if (self.centroids==0).all(): set_trace()
+            if ARGS.test_level > 0:
+                break
 
     def train_epochs(self,num_epochs,dset,val_too=True):
         trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
         testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
-        net_backup = self.net
+        net_backup = deepcopy(self.net)
+        centroids_backup = deepcopy(self.centroids)
         best_nmi = 0
+        best_epoch_num = 0
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
+            epoch_start_time = time()
             self.epoch_num = epoch_num
             self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
             self.train_one_epoch(trainloader)
+            assert not all([(a==b).all() for a,b in zip(self.net.parameters(),net_backup.parameters())])
             if val_too:
-                gt = testloader.dataset.targets
                 self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
                 with torch.no_grad():
-                    pred_array = self.test_epoch_unsupervised(testloader)
-                num_of_each_label = label_counts(pred_array)
-                epoch_hard_counts = np.zeros(self.nc)
-                for ass,num in num_of_each_label.items():
-                    epoch_hard_counts[ass] = num
-                #epoch_hard_counts = np.array(list(num_of_each_label.values()))
-                epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
-                self.trans_dict = get_trans_dict(np.array(gt),pred_array)[0]
-                self.acc = (np.array([self.trans_dict[a] for a in gt])==pred_array).mean()
-                #assert acc == accuracy(pred_array,np.array(gt))
-                idx_array = np.array(list(self.trans_dict.keys())[:-1])
-                self.translated_log_prior = cudify(self.log_prior[idx_array])
-                nmi = normalized_mutual_info_score(pred_array,np.array(gt))
-                ari = adjusted_rand_score(pred_array,np.array(gt))
-                hce = np_entropy(epoch_hard_counts,base=2)
-                sce = np_entropy(epoch_soft_counts,base=2)
-                hcv = epoch_hard_counts.var()/epoch_hard_counts.mean()
-                scv = epoch_soft_counts.var()/epoch_hard_counts.mean()
-                if max(hcv,scv) > len(dset) - len(dset)/self.nc: set_trace()
-                print({k:v for k,v in num_of_each_label.items() if v < 5})
-                print(f"Hard counts entropy: {hce:.4f}\tSoft counts entropy: {sce:.4f}",end=' ')
-                print(f"Hard counts variance: {hcv:.4f}\tSoft counts variance: {scv:.4f}")
-                print(f"Epoch: {epoch_num}\tAcc: {self.acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
-                if nmi > best_nmi:
-                    net_backup = self.net
-                    best_nmi = nmi
+                    self.test_epoch_unsupervised(testloader)
+                if self.nmi > best_nmi:
+                    net_backup = deepcopy(self.net)
+                    centroids_backup = deepcopy(self.centroids)
+                    best_nmi = self.nmi
+                    best_epoch_num = epoch_num
+                    torch.save(self.net,join(ARGS.exp_dir,'best_net.pt'))
+                    with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
+                        f.write(f'{self.acc=:.3f}\n{self.nmi=:.3f}\n{self.ari=:.3f}\n')
+                        f.write(f'{self.hce=:.3f}\n{self.sce=:.3f}')
                 else:
-                    self.net = net_backup
+                    self.net = deepcopy(net_backup)
+                    self.centroids = deepcopy(centroids_backup)
+                    print(f'reloading from epoch {best_epoch_num}')
+                    with torch.no_grad():
+                        self.test_epoch_unsupervised(testloader)
+            if not all([(a==b).all() for a,b in zip(self.net.parameters(),net_backup.parameters())]):
+                breakpoint()
+            if not self.nmi == best_nmi:
+                breakpoint()
+            print(f'Time: {time()-epoch_start_time:.2f}')
+        with open(join(ARGS.exp_dir,'ARGS.txt'),'w') as f:
+            f.write(f'Dataset: {ARGS.dataset}\n')
+            for a in ['batch_size_train','nz','hidden_dim','lr','sigma']:
+                f.write(f'{a}: {getattr(ARGS,a)}\n')
+            f.write(f'warm_start: {ARGS.warm_start}\n')
+
 
     def test_epoch_unsupervised(self,testloader):
         self.eval()
@@ -263,7 +271,31 @@ class ClusterNet(nn.Module):
             self(images.cuda())
             preds.append(self.batch_assignments.detach().cpu().numpy())
         pred_array = np.concatenate(preds)
-        return pred_array
+        num_of_each_label = label_counts(pred_array)
+        epoch_hard_counts = np.zeros(self.nc)
+        for ass,num in num_of_each_label.items():
+            epoch_hard_counts[ass] = num
+        #epoch_hard_counts = np.array(list(num_of_each_label.values()))
+        epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
+        gt = testloader.dataset.targets
+        self.trans_dict = get_trans_dict(np.array(gt),pred_array)[0]
+        acc = (np.array([self.trans_dict[a] for a in gt])==pred_array).mean()
+        self.acc = acc
+        #assert acc == accuracy(pred_array,np.array(gt))
+        idx_array = np.array(list(self.trans_dict.keys())[:-1])
+        self.translated_log_prior = cudify(self.log_prior[idx_array])
+        self.nmi = normalized_mutual_info_score(pred_array,np.array(gt))
+        self.ari = adjusted_rand_score(pred_array,np.array(gt))
+        self.hce = np_entropy(epoch_hard_counts,base=2)
+        self.sce = np_entropy(epoch_soft_counts,base=2)
+        self.hcv = epoch_hard_counts.var()/epoch_hard_counts.mean()
+        self.scv = epoch_soft_counts.var()/epoch_hard_counts.mean()
+        #if max(self.hcv,self.scv) > len(dset) - len(dset)/self.nc: set_trace()
+        print({k:v for k,v in num_of_each_label.items() if v < 5})
+        print(f'Hard counts entropy: {self.hce:.4f}\tSoft counts entropy: {self.sce:.4f}',end=' ')
+        print(f'Hard counts variance: {self.hcv:.4f}\tSoft counts variance: {self.scv:.4f}')
+        print(f'Epoch: {self.epoch_num}\tAcc: {self.acc:.3f}\tNMI: {self.nmi:.3f}\t'
+            f'ARI: {self.ari:.3f}\t')
 
 def neural_gas_loss(v,temp):
     n_instances, n_clusters = v.shape
@@ -285,6 +317,8 @@ def sinkhorn(scores, eps=0.05, niters=3):
 if __name__ == '__main__':
     ARGS,dataset = cl_args.get_cl_args_and_dset()
 
-    with torch.autograd.set_detect_anomaly(True):
-        cluster_net = ClusterNet(ARGS).cuda()
-        cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
+    ARGS.exp_dir = set_experiment_dir(f'experiments/{ARGS.expname}',name_of_trials='experiments/tmp',overwrite=ARGS.overwrite)
+    start_time = time()
+    cluster_net = ClusterNet(ARGS).cuda()
+    cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
+    print(f'Total time: {asMinutes(time()-start_time)}')

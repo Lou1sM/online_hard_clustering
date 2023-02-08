@@ -13,13 +13,6 @@ def get_cl_args():
     train_type_group.add_argument('--no_reg',action='store_true')
     train_type_group.add_argument('--no_cluster_loss',action='store_true')
     train_type_group.add_argument('--sinkhorn',action='store_true')
-    dset_group = parser.add_mutually_exclusive_group()
-    dset_group.add_argument('--imt',action='store_true')
-    dset_group.add_argument('--c100',action='store_true')
-    dset_group.add_argument('--svhn',action='store_true')
-    dset_group.add_argument('--stl',action='store_true')
-    dset_group.add_argument('--fashmnist',action='store_true')
-    dset_group.add_argument('--tweets',action='store_true')
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--warm_start',action='store_true')
@@ -37,31 +30,39 @@ def get_cl_args():
     parser.add_argument('--soft_train',action='store_true')
     parser.add_argument('--kl_cent',action='store_true')
     parser.add_argument('--var_improved',action='store_true')
-    parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
+    parser.add_argument('--verbose',action='store_true')
+    parser.add_argument('--test_level',type=int,choices=[0,1,2],default=0)
+    parser.add_argument('-t','--test',action='store_true')
+    parser.add_argument('--overwrite',action='store_true')
     parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc'],default='simp')
+    parser.add_argument('--expname',type=str,default='tmp')
+    parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stil','fashmnist','tweets'],default='tmp')
     ARGS = parser.parse_args()
+    if ARGS.test:
+        ARGS.test_level = 2
+        ARGS.expname = 'tmp'
     return ARGS
 
 
 def get_cl_args_and_dset():
     args = get_cl_args()
-    if args.imt:
+    if args.dataset == 'imt':
         print('using dset imt')
         dataset = get_datasets.get_imagenet_tiny(args.test_level)
         args.nc = 200
-    elif args.fashmnist:
+    elif args.dataset == 'fashmnist':
         print('using dset fashmnist')
         dataset = get_datasets.get_fashmnist(args.test_level)
         args.nc = 10
-    elif args.stl:
+    elif args.dataset == 'stl':
         print('using dset stl')
         dataset = get_datasets.get_stl(args.test_level)
         args.nc = 10
-    elif args.c100:
+    elif args.dataset == 'c100':
         print('using dset c100')
         dataset = get_datasets.get_cifar100(args.test_level)
         args.nc = 100
-    elif args.tweets:
+    elif args.dataset == 'tweets':
         print('using dset tweets')
         dataset = get_datasets.get_tweets(args.test_level)
         args.nc = 269
