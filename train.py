@@ -6,6 +6,7 @@ from dl_utils.tensor_funcs import cudify
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data.sampler import WeightedRandomSampler
 from torch.distributions import Categorical
 import cl_args
 from pdb import set_trace
@@ -21,11 +22,8 @@ class ClusterNet(nn.Module):
         self.nc = ARGS.nc
         self.nz = ARGS.nz
         self.sigma = ARGS.sigma
-        if ARGS.tweets:
-            counts = np.load('datasets/tweets/cluster_label_counts.npy')
-            self.log_prior = np.log(counts/counts.sum())
-        else:
-            self.log_prior = 'uniform'
+        self.prior = ARGS.prior
+        self.log_prior = np.log(ARGS.prior)
 
         if ARGS.imt:
             out_conv_shape = 13
@@ -63,7 +61,7 @@ class ClusterNet(nn.Module):
                 nn.ReLU(),
                 nn.Linear(ARGS.hidden_dim,self.nz))
 
-        self.opt = optim.Adam(self.net.parameters())
+        self.opt = optim.Adam(self.net.parameters(),lr=ARGS.lr)
 
         self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda')
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=1e-3)
@@ -132,6 +130,8 @@ class ClusterNet(nn.Module):
     def assign_batch_sinkhorn(self):
         with torch.no_grad():
             soft_assignments = sinkhorn(-self.cluster_dists,eps=.5,niters=15)
+        if self.prior != 'uniform' and self.epoch_num>0 and ARGS.help_sinkhorn:
+            soft_assignments *= torch.tensor(self.prior).cuda().exp()
         self.batch_assignments = soft_assignments.argmin(axis=1)
         self.soft_counts = soft_assignments.sum(axis=0).detach()
         if ARGS.soft_train:
@@ -163,8 +163,8 @@ class ClusterNet(nn.Module):
         self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         cost_table = flat_x/(2*ARGS.sigma)
-        if self.log_prior != 'uniform' and self.epoch_num > 10:
-            cost_table -= self.translated_log_prior*self.acc
+        if self.prior != 'uniform' and self.epoch_num > 10:
+            cost_table -= np.log(self.translated_prior)#*self.acc
         had_repeats = False
         if not self.training and not ARGS.constrained_eval:
             self.batch_assignments = self.cluster_dists.argmin(axis=1)
@@ -206,14 +206,19 @@ class ClusterNet(nn.Module):
                         #if (rc := self.raw_counts[k].item()) == 0:
                             #continue
                         print(f"{k} constrained: {v.item()}\traw: {self.raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
-                print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
+                if not ARGS.suppress_prints:
+                    print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
                 running_loss = 0.0
             running_loss += self.cluster_loss.item()
             if (self.centroids==0).all(): set_trace()
 
     def train_epochs(self,num_epochs,dset,val_too=True):
-        trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
-        testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
+        if self.prior == 'uniform':
+            trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
+            testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
+        else:
+            trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
+            testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
         net_backup = self.net
         best_nmi = 0
         if ARGS.warm_start:
@@ -233,27 +238,30 @@ class ClusterNet(nn.Module):
                     epoch_hard_counts[ass] = num
                 #epoch_hard_counts = np.array(list(num_of_each_label.values()))
                 epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
-                self.trans_dict = get_trans_dict(np.array(gt),pred_array)[0]
+                self.trans_dict = get_trans_dict(np.array(gt),pred_array)
                 self.acc = (np.array([self.trans_dict[a] for a in gt])==pred_array).mean()
                 #assert acc == accuracy(pred_array,np.array(gt))
                 idx_array = np.array(list(self.trans_dict.keys())[:-1])
-                self.translated_log_prior = cudify(self.log_prior[idx_array])
+                self.translated_prior = cudify(self.prior[idx_array])
                 nmi = normalized_mutual_info_score(pred_array,np.array(gt))
                 ari = adjusted_rand_score(pred_array,np.array(gt))
                 hce = np_entropy(epoch_hard_counts,base=2)
                 sce = np_entropy(epoch_soft_counts,base=2)
                 hcv = epoch_hard_counts.var()/epoch_hard_counts.mean()
                 scv = epoch_soft_counts.var()/epoch_hard_counts.mean()
+                model_distribution = epoch_hard_counts/epoch_hard_counts.sum()
+                log_quot = np.log((model_distribution/self.prior)+1e-8)
+                kl_star = np.dot(model_distribution,log_quot)
                 if max(hcv,scv) > len(dset) - len(dset)/self.nc: set_trace()
-                print({k:v for k,v in num_of_each_label.items() if v < 5})
-                print(f"Hard counts entropy: {hce:.4f}\tSoft counts entropy: {sce:.4f}",end=' ')
-                print(f"Hard counts variance: {hcv:.4f}\tSoft counts variance: {scv:.4f}")
-                print(f"Epoch: {epoch_num}\tAcc: {self.acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
+                #print({k:v for k,v in num_of_each_label.items() if v < 5})
+                #print(f"KL*: {kl_star:.4f}")
+                #print(f"Epoch: {epoch_num}\tAcc: {self.acc:.3f}\tNMI: {nmi:.3f}\tARI: {ari:.3f}")
                 if nmi > best_nmi:
-                    net_backup = self.net
                     best_nmi = nmi
-                else:
-                    self.net = net_backup
+                    best_acc = self.acc
+                    best_ari = ari
+                    best_kl_star = kl_star
+        print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star}")
 
     def test_epoch_unsupervised(self,testloader):
         self.eval()

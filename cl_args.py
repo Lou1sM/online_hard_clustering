@@ -1,4 +1,6 @@
 import argparse
+from dl_utils.torch_misc import CifarLikeDataset
+import numpy as np
 import get_datasets
 
 
@@ -37,14 +39,39 @@ def get_cl_args():
     parser.add_argument('--soft_train',action='store_true')
     parser.add_argument('--kl_cent',action='store_true')
     parser.add_argument('--var_improved',action='store_true')
+    parser.add_argument('--suppress_prints',action='store_true')
+    parser.add_argument('--help_sinkhorn',action='store_true')
     parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
+    parser.add_argument('--imbalance',type=int,default=0)
     parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc'],default='simp')
     ARGS = parser.parse_args()
     return ARGS
 
+def make_dset_imbalanced(dset,class_probs,nc):
+    imbalanced_data = []
+    imbalanced_targets = []
+    for i,p in enumerate(class_probs):
+        targets = np.array(dset.targets)
+        label_mask = targets==i
+        rand_mask =np.random.rand(sum(label_mask))<p
+        new_data = dset.data[label_mask][rand_mask]
+        new_targets = targets[label_mask][rand_mask]
+        imbalanced_data.append(new_data)
+        imbalanced_targets.append(new_targets)
+    imbalanced_data_arr = np.concatenate(imbalanced_data)
+    imbalanced_targets_arr = np.concatenate(imbalanced_targets)
+    assert len(imbalanced_data_arr) == len(imbalanced_targets_arr)
+    return CifarLikeDataset(imbalanced_data_arr,imbalanced_targets_arr,transform=dset.transform)
 
 def get_cl_args_and_dset():
     args = get_cl_args()
+    if args.imbalance==1:
+        class_probs=np.array([1.0,1.0,1.0,1.0,1.0,1.0,0.95,0.9,0.85,0.8])
+    elif args.imbalance==2:
+        class_probs=np.array([1.0,0.95,0.9,0.85,0.8,0.75,0.7,0.65,0.6,0.55])
+    elif args.imbalance==3:
+        class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
+
     if args.imt:
         print('using dset imt')
         dataset = get_datasets.get_imagenet_tiny(args.test_level)
@@ -71,4 +98,9 @@ def get_cl_args_and_dset():
         dataset = get_datasets.get_cifar10(args.test_level)
         args.nc = 10
 
+    if args.imbalance > 0:
+        dataset = make_dset_imbalanced(dataset,class_probs,args.nc)
+        args.prior = class_probs/class_probs.sum()
+    else:
+        args.prior = np.ones(args.nc)/args.nc
     return args, dataset
