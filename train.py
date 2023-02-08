@@ -2,7 +2,7 @@ from time import time
 from os.path import join
 from copy import deepcopy
 from scipy.stats import entropy as np_entropy
-from dl_utils.label_funcs import label_counts, get_trans_dict
+from dl_utils.label_funcs import label_counts, get_trans_dict, accuracy
 from dl_utils.tensor_funcs import cudify
 from dl_utils.misc import set_experiment_dir, asMinutes
 import torch.nn as nn
@@ -223,12 +223,14 @@ class ClusterNet(nn.Module):
     def train_epochs(self,num_epochs,dset,val_too=True):
         trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
         testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
+        best_acc = 0
         best_nmi = 0
+        best_ari = 0
+        best_kl_star = 0
         best_epoch_num = 0
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
-            epoch_start_time = time()
             self.epoch_num = epoch_num
             self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
             self.train_one_epoch(trainloader)
@@ -240,9 +242,7 @@ class ClusterNet(nn.Module):
                 log_quot = np.log((model_distribution/self.prior)+1e-8)
                 self.kl_star = np.dot(model_distribution,log_quot)
                 if self.nmi > best_nmi:
-                    centroids_backup = deepcopy(self.centroids)
                     best_nmi = self.nmi
-                    best_epoch_num = self.epoch_num
                     best_acc = self.acc
                     best_ari = self.ari
                     best_kl_star = self.kl_star
@@ -251,7 +251,6 @@ class ClusterNet(nn.Module):
                         f.write(f'{self.acc=:.3f}\n{self.nmi=:.3f}\n{self.ari=:.3f}\n')
                         f.write(f'{self.hce=:.3f}\n{self.sce=:.3f}')
                 else:
-                    self.centroids = deepcopy(centroids_backup)
                     with torch.no_grad():
                         self.test_epoch_unsupervised(testloader)
         print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star}")
@@ -277,9 +276,7 @@ class ClusterNet(nn.Module):
         self.epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
         self.gt = testloader.dataset.targets
         self.trans_dict = get_trans_dict(np.array(self.gt),pred_array)
-        acc = (np.array([self.trans_dict[a] for a in self.gt])==pred_array).mean()
-        self.acc = acc
-        #assert acc == accuracy(pred_array,np.array(gt))
+        self.acc = accuracy(pred_array,np.array(self.gt))
         idx_array = np.array(list(self.trans_dict.keys())[:-1])
         self.translated_log_prior = cudify(self.log_prior[idx_array])
         self.nmi = normalized_mutual_info_score(pred_array,np.array(self.gt))

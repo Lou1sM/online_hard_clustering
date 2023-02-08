@@ -9,46 +9,28 @@ from dl_utils.torch_misc import CifarLikeDataset
 from dl_utils.tensor_funcs import numpyify
 
 
-def get_cifar10(test_level):
-    transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
-    data_dir = '~/dataset/cifar10_data'
-    torch_cifar10_func_train = partial(torchvision.datasets.CIFAR10,root=data_dir,train=True,transform=transform,download=True)
-    torch_cifar10_func_test = partial(torchvision.datasets.CIFAR10,root=data_dir,train=False,transform=transform,download=True)
-    return get_torch_available_dset(torch_cifar10_func_train,torch_cifar10_func_test,test_level)
-
 def get_tweets(test_level):
     X = np.load('datasets/tweets/roberta_doc_vecs.npy')
     y = np.load('datasets/tweets/cluster_labels.npy')
     return CifarLikeDataset(X,y)
 
-def get_cifar100(test_level):
+def get_cifar10(is_test):
+    transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
+    data_dir = '~/dataset/cifar10_data'
+    dset = torchvision.datasets.CIFAR10(root=data_dir,train=not is_test,transform=transform,download=True)
+    return dset.data, dset.targets
+
+def get_cifar100(is_test):
     transform = Compose([ToTensor(),Normalize((0.4914, 0.4822, 0.4465), (0.2675, 0.2565, 0.2761))])
     data_dir = '~/datasets/cifar100_data'
-    torch_cifar100_func_train = partial(torchvision.datasets.CIFAR100,root=data_dir,train=True,transform=transform,download=True)
-    torch_cifar100_func_test = partial(torchvision.datasets.CIFAR100,root=data_dir,train=False,transform=transform,download=True)
-    return get_torch_available_dset(torch_cifar100_func_train,torch_cifar100_func_test,test_level)
+    dset = torchvision.datasets.CIFAR100(root=data_dir,train=not is_test,transform=transform,download=True)
+    return dset.data, dset.targets
 
-def get_fashmnist(test_level):
-    add_colour_dim = lambda t: t.unsqueeze(0)
+def get_fashmnist(is_test):
     transform = Compose([ToTensor()])
     data_dir = '~/dataset/fashmnist_data'
-    dset = torchvision.datasets.FashionMNIST(root=data_dir,train=True,transform=transform)
-    dl = data.DataLoader(dset,128)
-    return dset
-
-def get_svhn(test_level):
-    transform = Compose([ToTensor(),Normalize((0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970))])
-    data_dir = '~/dataset/svhn_data'
-    def wrapper(dset_func):
-        def inner():
-            dset = dset_func()
-            return CifarLikeDataset(np.transpose(dset.data,(0,3,2,1)),dset.labels,transform)
-        return inner
-    torch_svhn_func_train_ = partial(torchvision.datasets.SVHN,root=data_dir,split='train',transform=transform,download=True)
-    torch_svhn_func_test_ = partial(torchvision.datasets.SVHN,root=data_dir,split='test',transform=transform,download=True)
-    torch_svhn_func_train = wrapper(torch_svhn_func_train_)
-    torch_svhn_func_test = wrapper(torch_svhn_func_test_)
-    return get_torch_available_dset(torch_svhn_func_train,torch_svhn_func_test,test_level)
+    dset = torchvision.datasets.FashionMNIST(root=data_dir,train=not is_test,transform=transform,download=True)
+    return dset.data, dset.targets
 
 def get_stl(test_level):
     transform = Compose([ToTensor(),Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -58,28 +40,44 @@ def get_stl(test_level):
             dset = dset_func()
             return CifarLikeDataset(np.transpose(dset.data,(0,3,2,1)),dset.labels,transform)
         return inner
-    torch_stl_func_train_ = partial(torchvision.datasets.STL10,root=data_dir,split='train',transform=transform,download=True)
-    torch_stl_func_test_ = partial(torchvision.datasets.STL10,root=data_dir,split='test',transform=transform,download=True)
-    torch_stl_func_train = wrapper(torch_stl_func_train_)
-    torch_stl_func_test = wrapper(torch_stl_func_test_)
-    return get_torch_available_dset(torch_stl_func_train,torch_stl_func_test,test_level)
-
-def get_torch_available_dset(torch_dset_func_train,torch_dset_func_test,test_level):
-    testset = torch_dset_func_test()
-    if test_level==2:
-        trainset = testset
-        trainset.data = trainset.data[:1000]
-        trainset.targets = trainset.targets[:1000]
-    elif test_level==1:
-        trainset = testset
-        rand_idxs = torch.randint(len(trainset),size=(10000,))
-        trainset.data = trainset.data[rand_idxs]
-        trainset.targets = torch.tensor(trainset.targets)[rand_idxs].tolist()
+    if test_level == 0:
+        dset = torchvision.datasets.STL10(root=data_dir,split='train',transform=transform,download=True)
     else:
-        trainset = torch_dset_func_train()
-        trainset.data = np.concatenate([trainset.data,testset.data])
-        trainset.targets = trainset.targets + testset.targets
-    return trainset
+        dset = torchvision.datasets.STL10(root=data_dir,split='test',transform=transform,download=True)
+
+    return np.transpose(dset.data,(0,3,2,1)), dset.labels
+
+def get_train_or_test_dset(dset_name,is_test):
+    if dset_name=='c10':
+        X,y = get_cifar10(is_test)
+    elif dset_name=='c100':
+        X,y = get_cifar100(is_test)
+    elif dset_name=='stl':
+        X,y = get_stl(True)
+    elif dset_name=='fashmnist':
+        X,y = get_fashmnist(is_test)
+    X = numpyify(X)
+    y = numpyify(y)
+    return X, y
+
+def get_dset(dset_name,test_level):
+    X, y = get_train_or_test_dset(dset_name,True)
+    if test_level==2:
+        X = X[:1000]
+        y = y[:1000]
+    elif test_level==1:
+        rand_idxs = np.random.randint(len(X),size=(10000,))
+        X = X[rand_idxs]
+        y = y[rand_idxs]
+    else:
+        X_tr, y_tr = get_train_or_test_dset(dset_name,False)
+        X = np.concatenate([X_tr,X])
+        y = np.concatenate([y_tr,y])
+    if dset_name == 'fashmnist':
+        transform = ToTensor()
+    else:
+        transform = Compose([ToTensor(),Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    return CifarLikeDataset(X,y,transform=transform)
 
 def get_imagenet_tiny(test):
     data_for_each_class = []

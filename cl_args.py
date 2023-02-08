@@ -39,7 +39,7 @@ def get_cl_args():
     parser.add_argument('--imbalance',type=int,default=0)
     parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc'],default='simp')
     parser.add_argument('--expname',type=str,default='tmp')
-    parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stl','fashmnist','tweets'],default='tmp')
+    parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stl','fashmnist','tweets'],default='c10')
     ARGS = parser.parse_args()
     if ARGS.test_level > 0:
         ARGS.expname = 'tmp'
@@ -70,30 +70,21 @@ def get_cl_args_and_dset():
     elif args.imbalance==3:
         class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
 
+    dataset = get_datasets.get_dset(args.dataset,args.test_level)
     if args.dataset == 'imt':
-        print('using dset imt')
-        dataset = get_datasets.get_imagenet_tiny(args.test_level)
         args.nc = 200
     elif args.dataset == 'fashmnist':
-        print('using dset fashmnist')
-        dataset = get_datasets.get_fashmnist(args.test_level)
         args.nc = 10
     elif args.dataset == 'stl':
-        print('using dset stl')
-        dataset = get_datasets.get_stl(args.test_level)
         args.nc = 10
     elif args.dataset == 'c100':
-        print('using dset c100')
-        dataset = get_datasets.get_cifar100(args.test_level)
+        if args.imbalance>0:
+            class_probs = np.tile(class_probs,10)
         args.nc = 100
     elif args.dataset == 'tweets':
-        print('using dset tweets')
-        dataset = get_datasets.get_tweets(args.test_level)
         args.nc = 269
         args.arch = 'fc'
     else:
-        print('using dset c10')
-        dataset = get_datasets.get_cifar10(args.test_level)
         args.nc = 10
 
     if args.imbalance > 0:
