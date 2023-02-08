@@ -8,7 +8,6 @@ RELEVANT_ARGS = []
 def get_cl_args():
     parser = argparse.ArgumentParser()
     train_type_group = parser.add_mutually_exclusive_group()
-    train_type_group.add_argument('--prob',action='store_true')
     train_type_group.add_argument('--kl',action='store_true')
     train_type_group.add_argument('--var',action='store_true')
     train_type_group.add_argument('--ng',action='store_true')
@@ -23,7 +22,7 @@ def get_cl_args():
     parser.add_argument('--nc',type=int,default=10)
     parser.add_argument('--nz',type=int,default=128)
     parser.add_argument('--hidden_dim',type=int,default=512)
-    parser.add_argument('--epochs',type=int,default=1)
+    parser.add_argument('-e','--epochs',type=int,default=1)
     parser.add_argument('--temp',type=float,default=1.)
     parser.add_argument('--sigma',type=float,default=5.)
     parser.add_argument('--lr',type=float,default=1e-3)
@@ -40,10 +39,9 @@ def get_cl_args():
     parser.add_argument('--imbalance',type=int,default=0)
     parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc'],default='simp')
     parser.add_argument('--expname',type=str,default='tmp')
-    parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stil','fashmnist','tweets'],default='tmp')
+    parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stl','fashmnist','tweets'],default='tmp')
     ARGS = parser.parse_args()
-    if ARGS.test:
-        ARGS.test_level = 2
+    if ARGS.test_level > 0:
         ARGS.expname = 'tmp'
     return ARGS
 

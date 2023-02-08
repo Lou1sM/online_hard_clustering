@@ -235,16 +235,11 @@ class ClusterNet(nn.Module):
             if val_too:
                 self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
                 with torch.no_grad():
-                    pred_array = self.test_epoch_unsupervised(testloader)
+                    self.test_epoch_unsupervised(testloader)
                 model_distribution = self.epoch_hard_counts/self.epoch_hard_counts.sum()
                 log_quot = np.log((model_distribution/self.prior)+1e-8)
                 self.kl_star = np.dot(model_distribution,log_quot)
-                self.trans_dict = get_trans_dict(np.array(self.gt),pred_array)
-                assert self.acc == (np.array([self.trans_dict[a] for a in self.gt])==pred_array).mean()
-                idx_array = np.array(list(self.trans_dict.keys())[:-1])
-                self.translated_prior = cudify(self.prior[idx_array])
                 if self.nmi > best_nmi:
-                    net_backup = deepcopy(self.net)
                     centroids_backup = deepcopy(self.centroids)
                     best_nmi = self.nmi
                     best_epoch_num = self.epoch_num
@@ -256,12 +251,9 @@ class ClusterNet(nn.Module):
                         f.write(f'{self.acc=:.3f}\n{self.nmi=:.3f}\n{self.ari=:.3f}\n')
                         f.write(f'{self.hce=:.3f}\n{self.sce=:.3f}')
                 else:
-                    self.net = deepcopy(net_backup)
                     self.centroids = deepcopy(centroids_backup)
-                    print(f'reloading from epoch {best_epoch_num}')
                     with torch.no_grad():
                         self.test_epoch_unsupervised(testloader)
-            print(f'Time: {time()-epoch_start_time:.2f}')
         print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star}")
         with open(join(ARGS.exp_dir,'ARGS.txt'),'w') as f:
             f.write(f'Dataset: {ARGS.dataset}\n')
@@ -284,7 +276,7 @@ class ClusterNet(nn.Module):
         #epoch_hard_counts = np.array(list(num_of_each_label.values()))
         self.epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
         self.gt = testloader.dataset.targets
-        self.trans_dict = get_trans_dict(np.array(self.gt),pred_array)[0]
+        self.trans_dict = get_trans_dict(np.array(self.gt),pred_array)
         acc = (np.array([self.trans_dict[a] for a in self.gt])==pred_array).mean()
         self.acc = acc
         #assert acc == accuracy(pred_array,np.array(gt))
@@ -296,12 +288,6 @@ class ClusterNet(nn.Module):
         self.sce = np_entropy(self.epoch_soft_counts,base=2)
         self.hcv = self.epoch_hard_counts.var()/self.epoch_hard_counts.mean()
         self.scv = self.epoch_soft_counts.var()/self.epoch_hard_counts.mean()
-        print({k:v for k,v in num_of_each_label.items() if v < 5})
-        print(f'Hard counts entropy: {self.hce:.4f}\tSoft counts entropy: {self.sce:.4f}',end=' ')
-        print(f'Hard counts variance: {self.hcv:.4f}\tSoft counts variance: {self.scv:.4f}')
-        print(f'Epoch: {self.epoch_num}\tAcc: {self.acc:.3f}\tNMI: {self.nmi:.3f}\t'
-            f'ARI: {self.ari:.3f}\t')
-        return pred_array
 
 def neural_gas_loss(v,temp):
     n_instances, n_clusters = v.shape
