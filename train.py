@@ -41,6 +41,8 @@ class ClusterNet(nn.Module):
         self.conv1 = nn.Conv2d(3, 6, 5)
         if ARGS.arch == 'alex':
             self.net = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=False)
+            self.net.classifier = self.net.classifier[:5] # remove final linear and relu
+            self.net.classifier[4] = nn.Linear(4096,self.nz,device='cuda')
         if ARGS.arch == 'res':
             self.net = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False)
             self.net.fc.weight.data = self.net.fc.weight.data[:self.nz]
@@ -119,7 +121,7 @@ class ClusterNet(nn.Module):
         elif ARGS.sinkhorn:
             self.assign_batch_sinkhorn()
         elif ARGS.no_reg:
-            min_dists, self.batch_assignments  = self.cluster_dists.min(axis=1)
+            min_dists, self.batch_assignments = self.cluster_dists.min(axis=1)
             self.cluster_loss = min_dists.mean()
         else:
             self.assign_batch_probabilistic()
@@ -167,21 +169,20 @@ class ClusterNet(nn.Module):
         self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         cost_table = flat_x/(2*ARGS.sigma)
-        if self.prior != 'uniform' and self.epoch_num > 1:
-            cost_table -= np.log(self.translated_prior)#*self.acc
+        if self.prior != 'uniform' and self.epoch_num > 0:
+            cost_table -= self.translated_log_prior
         had_repeats = False
         if not self.training and not ARGS.constrained_eval:
             self.batch_assignments = self.cluster_dists.argmin(axis=1)
             return
         assign_iter = 0
         while unassigned_idxs.any():
-            try:assert (~unassigned_idxs).sum() == assign_iter or had_repeats
-            except: set_trace()
+            assert (~unassigned_idxs).sum() == assign_iter or had_repeats
             cost = (cost_table[unassigned_idxs]+(self.cluster_counts+1).log()).min()
             nzs = ((cost_table+(self.cluster_counts+1).log() == cost)*unassigned_idxs[:,None]).nonzero()
             if len(nzs)!=1: had_repeats = True
             new_vec_idx, new_assigned_key = nzs[0]
-            if not unassigned_idxs[new_vec_idx]: set_trace()
+            assert unassigned_idxs[new_vec_idx]
             unassigned_idxs[new_vec_idx] = False
             assigned_key_order.append(new_vec_idx)
             self.batch_assignments[new_vec_idx] = new_assigned_key
@@ -207,8 +208,8 @@ class ClusterNet(nn.Module):
             if i % 10 == 0 and i > 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.cluster_counts):
-                        #if (rc := self.raw_counts[k].item()) == 0:
-                            #continue
+                        if (rc := self.raw_counts[k].item()) == 0:
+                            continue
                         print(f"{k} constrained: {v.item()}\traw: {self.raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
                 if not ARGS.suppress_prints:
                     print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
@@ -225,7 +226,6 @@ class ClusterNet(nn.Module):
         best_nmi = 0
         best_ari = 0
         best_kl_star = 0
-        best_epoch_num = 0
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
@@ -244,7 +244,6 @@ class ClusterNet(nn.Module):
                     best_acc = self.acc
                     best_ari = self.ari
                     best_kl_star = self.kl_star
-                    #torch.save(self.net,join(ARGS.exp_dir,'best_net.pt'))
                     with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
                         f.write(f'{self.acc=:.3f}\n{self.nmi=:.3f}\n{self.ari=:.3f}\n')
                 else:
@@ -269,12 +268,14 @@ class ClusterNet(nn.Module):
         self.epoch_hard_counts = np.zeros(self.nc)
         for ass,num in num_of_each_label.items():
             self.epoch_hard_counts[ass] = num
-        #epoch_hard_counts = np.array(list(num_of_each_label.values()))
         self.epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
         self.gt = testloader.dataset.targets
         self.trans_dict = get_trans_dict(np.array(self.gt),pred_array)
         self.acc = accuracy(pred_array,np.array(self.gt))
+        if self.acc == 0:
+            breakpoint()
         idx_array = np.array(list(self.trans_dict.keys())[:-1])
+        self.translated_prior = self.prior[idx_array]
         self.translated_log_prior = cudify(self.log_prior[idx_array])
         self.nmi = normalized_mutual_info_score(pred_array,np.array(self.gt))
         self.ari = adjusted_rand_score(pred_array,np.array(self.gt))
