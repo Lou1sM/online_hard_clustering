@@ -1,7 +1,5 @@
 from time import time
 from os.path import join
-from copy import deepcopy
-from scipy.stats import entropy as np_entropy
 from dl_utils.label_funcs import label_counts, get_trans_dict, accuracy
 from dl_utils.tensor_funcs import cudify
 from dl_utils.misc import set_experiment_dir, asMinutes
@@ -169,7 +167,7 @@ class ClusterNet(nn.Module):
         self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         cost_table = flat_x/(2*ARGS.sigma)
-        if self.prior != 'uniform' and self.epoch_num > 10:
+        if self.prior != 'uniform' and self.epoch_num > 1:
             cost_table -= np.log(self.translated_prior)#*self.acc
         had_repeats = False
         if not self.training and not ARGS.constrained_eval:
@@ -249,7 +247,6 @@ class ClusterNet(nn.Module):
                     #torch.save(self.net,join(ARGS.exp_dir,'best_net.pt'))
                     with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
                         f.write(f'{self.acc=:.3f}\n{self.nmi=:.3f}\n{self.ari=:.3f}\n')
-                        f.write(f'{self.hce=:.3f}\n{self.sce=:.3f}')
                 else:
                     with torch.no_grad():
                         self.test_epoch_unsupervised(testloader)
@@ -281,8 +278,6 @@ class ClusterNet(nn.Module):
         self.translated_log_prior = cudify(self.log_prior[idx_array])
         self.nmi = normalized_mutual_info_score(pred_array,np.array(self.gt))
         self.ari = adjusted_rand_score(pred_array,np.array(self.gt))
-        self.hce = np_entropy(self.epoch_hard_counts,base=2)
-        self.sce = np_entropy(self.epoch_soft_counts,base=2)
         self.hcv = self.epoch_hard_counts.var()/self.epoch_hard_counts.mean()
         self.scv = self.epoch_soft_counts.var()/self.epoch_hard_counts.mean()
 
@@ -292,6 +287,7 @@ def neural_gas_loss(v,temp):
     sorted_v, assignments_order = torch.sort(v)
     assert (sorted_v**2 * weightings).mean() < ((sorted_v**2).mean() * weightings.mean())
     return (sorted_v**2 * weightings).sum(axis=1), assignments_order[:,0]
+
 def sinkhorn(scores, eps=0.05, niters=3):
     Q = torch.exp(scores / eps).T
     Q /= sum(Q)

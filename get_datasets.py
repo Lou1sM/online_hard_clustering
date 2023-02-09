@@ -56,6 +56,8 @@ def get_train_or_test_dset(dset_name,is_test):
         X,y = get_stl(True)
     elif dset_name=='fashmnist':
         X,y = get_fashmnist(is_test)
+    elif dset_name=='imt':
+        X,y = get_imagenet_tiny(is_test)
     X = numpyify(X)
     y = numpyify(y)
     return X, y
@@ -69,12 +71,14 @@ def get_dset(dset_name,test_level):
         rand_idxs = np.random.randint(len(X),size=(10000,))
         X = X[rand_idxs]
         y = y[rand_idxs]
-    else:
+    elif dset_name!='imt': # no train-test split in im-tiny
         X_tr, y_tr = get_train_or_test_dset(dset_name,False)
         X = np.concatenate([X_tr,X])
         y = np.concatenate([y_tr,y])
     if dset_name == 'fashmnist':
         transform = ToTensor()
+    elif dset_name == 'imt':
+        transform = None
     else:
         transform = Compose([ToTensor(),Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     return CifarLikeDataset(X,y,transform=transform)
@@ -97,4 +101,4 @@ def get_imagenet_tiny(test):
     data_as_array = torch.tensor(np.concatenate(data_for_each_class)).transpose(1,3).float()
     labels_as_array = torch.tensor(np.concatenate(labels_for_each_class)).long()
 
-    return CifarLikeDataset(data_as_array,labels_as_array)
+    return data_as_array,labels_as_array

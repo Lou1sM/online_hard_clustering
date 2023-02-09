@@ -71,9 +71,7 @@ def get_cl_args_and_dset():
         class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
 
     dataset = get_datasets.get_dset(args.dataset,args.test_level)
-    if args.dataset == 'imt':
-        args.nc = 200
-    elif args.dataset == 'fashmnist':
+    if args.dataset == 'fashmnist':
         args.nc = 10
     elif args.dataset == 'stl':
         args.nc = 10
@@ -81,6 +79,10 @@ def get_cl_args_and_dset():
         if args.imbalance>0:
             class_probs = np.tile(class_probs,10)
         args.nc = 100
+    elif args.dataset == 'imt':
+        if args.imbalance>0:
+            class_probs = np.tile(class_probs,20)
+        args.nc = 200
     elif args.dataset == 'tweets':
         args.nc = 269
         args.arch = 'fc'
