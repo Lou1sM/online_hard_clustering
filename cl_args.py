@@ -27,6 +27,7 @@ def get_cl_args():
     parser.add_argument('--sigma',type=float,default=5.)
     parser.add_argument('--lr',type=float,default=1e-3)
     parser.add_argument('--track_counts',action='store_true')
+    parser.add_argument('--estimate_covars',action='store_true')
     parser.add_argument('--keep_scores',action='store_true')
     parser.add_argument('--soft_train',action='store_true')
     parser.add_argument('--kl_cent',action='store_true')

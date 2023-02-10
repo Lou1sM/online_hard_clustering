@@ -25,7 +25,7 @@ class ClusterNet(nn.Module):
         self.bs_val = ARGS.batch_size_val
         self.nc = ARGS.nc
         self.nz = ARGS.nz
-        self.sigma = ARGS.sigma
+        #self.sigma = ARGS.sigma
         if ARGS.dataset == 'tweets':
             counts = np.load('datasets/tweets/cluster_label_counts.npy')
             self.log_prior = np.log(counts/counts.sum())
@@ -73,9 +73,11 @@ class ClusterNet(nn.Module):
 
         self.opt = optim.Adam(self.net.parameters(),lr=ARGS.lr)
 
-        self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda')
+        self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
+        self.inv_covars = 1e-2*torch.eye(ARGS.nz,requires_grad=False,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
+        #self.inv_covars = torch.randn(ARGS.nc,ARGS.nz,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=ARGS.lr)
-        self.cluster_dists = None
+        self.cluster_log_probs = None
         self.cluster_counts = torch.zeros(ARGS.nc,device='cuda').long()
         self.raw_counts = torch.zeros(ARGS.nc,device='cuda').long()
         self.total_soft_counts = torch.zeros(ARGS.nc,device='cuda')
@@ -107,17 +109,21 @@ class ClusterNet(nn.Module):
             new_inp,targets = next(iter(dloader))
             inp = torch.cat([inp,new_inp[:self.nc-len(inp)]])
         sample_feature_vecs = self.net(inp.cuda())
-        self.centroids = sample_feature_vecs.clone().detach().requires_grad_(True)
+        self.centroids = sample_feature_vecs.clone().detach().double().requires_grad_(True)
 
     def forward(self, inp):
         self.bs = inp.shape[0]
         feature_vecs = self.net(inp)
-        self.cluster_dists = (feature_vecs[:,None]-self.centroids).norm(dim=2)
+        cluster_dists = feature_vecs[:,None]-self.centroids
+        self.cluster_log_probs = torch.einsum('bcu,czu,bcz->bc',cluster_dists,self.inv_covars,cluster_dists)
+        #assert torch.allclose(self.cluster_log_probs, cluster_dists.norm(dim=2)**2)
+        #assert all([torch.allclose(self.cluster_log_probs[b,c],(cluster_dists[b,c]@self.inv_covars[c]) @cluster_dists[b,c]) for b in range(self.bs) for c in range(self.nc)])
         self.assign_batch()
+        return feature_vecs
 
     def assign_batch(self):
         if ARGS.ng:
-            self.cluster_loss,self.batch_assignments = neural_gas_loss(.1*self.cluster_dists+(self.cluster_counts+1).log(),self.temp)
+            self.cluster_loss,self.batch_assignments = neural_gas_loss(.1*self.cluster_log_probs+(self.cluster_counts+1).log(),self.temp)
         elif ARGS.var:
             self.assign_batch_var()
         elif ARGS.kl:
@@ -125,59 +131,59 @@ class ClusterNet(nn.Module):
         elif ARGS.sinkhorn:
             self.assign_batch_sinkhorn()
         elif ARGS.no_reg:
-            min_dists, self.batch_assignments = self.cluster_dists.min(axis=1)
+            min_dists, self.batch_assignments = self.cluster_log_probs.min(axis=1)
             self.cluster_loss = min_dists.mean()
         else:
             self.assign_batch_probabilistic()
 
-        self.raw_counts.index_put_(indices=[self.cluster_dists.argmin(axis=1)],values=torch.ones_like(self.batch_assignments),accumulate=True)
+        self.raw_counts.index_put_(indices=[self.cluster_log_probs.argmin(axis=1)],values=torch.ones_like(self.batch_assignments),accumulate=True)
         if ARGS.ng or ARGS.sinkhorn or ARGS.kl:
             self.cluster_counts.index_put_(indices=[self.batch_assignments],values=torch.ones_like(self.batch_assignments),accumulate=True)
         if not ARGS.sinkhorn or ARGS.ng:
-            self.soft_counts = (-self.cluster_dists).softmax(axis=1).sum(axis=0).detach()
+            self.soft_counts = (-self.cluster_log_probs).softmax(axis=1).sum(axis=0).detach()
         self.total_soft_counts += self.soft_counts
 
     def assign_batch_sinkhorn(self):
         with torch.no_grad():
-            soft_assignments = sinkhorn(-self.cluster_dists,eps=.5,niters=15)
+            soft_assignments = sinkhorn(-self.cluster_log_probs,eps=.5,niters=15)
         if self.prior != 'uniform' and self.epoch_num>0 and ARGS.help_sinkhorn:
             soft_assignments *= torch.tensor(self.translated_prior).cuda().exp()
         self.batch_assignments = soft_assignments.argmin(axis=1)
         self.soft_counts = soft_assignments.sum(axis=0).detach()
         if ARGS.soft_train:
-            softmax_probs = (-self.cluster_dists.detach()).softmax(axis=1)
-            self.cluster_loss = (self.cluster_dists * softmax_probs).mean()
+            softmax_probs = (-self.cluster_log_probs.detach()).softmax(axis=1)
+            self.cluster_loss = (self.cluster_log_probs * softmax_probs).mean()
         else:
-            self.cluster_loss = self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
+            self.cluster_loss = self.cluster_log_probs[torch.arange(self.bs),self.batch_assignments].mean()
 
     def assign_batch_var(self):
-        self.batch_assignments = self.cluster_dists.argmin(axis=1)
-        #self.cluster_loss = 10*(self.cluster_dists**2).sum()
+        self.batch_assignments = self.cluster_log_probs.argmin(axis=1)
+        #self.cluster_loss = 10*(self.cluster_log_probs**2).sum()
         if ARGS.var_improved:
-            self.cluster_loss = 10*self.cluster_dists.mean(axis=0).var()
+            self.cluster_loss = 10*self.cluster_log_probs.mean(axis=0).var()
         else:
-            self.cluster_loss = 10*(self.cluster_dists.mean(axis=0)**2).mean()
-        self.cluster_loss +=.1*self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
+            self.cluster_loss = 10*(self.cluster_log_probs.mean(axis=0)**2).mean()
+        self.cluster_loss +=.1*self.cluster_log_probs[torch.arange(self.bs),self.batch_assignments].mean()
 
     def assign_batch_kl(self):
-        self.batch_assignments = self.cluster_dists.argmin(axis=1)
-        self.cluster_loss = 100*-Categorical(self.cluster_dists.mean(axis=0)).entropy()
+        self.batch_assignments = self.cluster_log_probs.argmin(axis=1)
+        self.cluster_loss = 100*-Categorical(self.cluster_log_probs.mean(axis=0)).entropy()
         if ARGS.kl_cent:
-            self.cluster_loss +=.1*self.cluster_dists[torch.arange(self.bs),self.batch_assignments].mean()
+            self.cluster_loss +=.1*self.cluster_log_probs[torch.arange(self.bs),self.batch_assignments].mean()
         else:
-            self.cluster_loss += .1*Categorical(self.cluster_dists).entropy().mean()
+            self.cluster_loss += .1*Categorical(self.cluster_log_probs).entropy().mean()
 
     def assign_batch_probabilistic(self):
-        flat_x = self.cluster_dists.transpose(0,1).flatten(1).transpose(0,1)
         assigned_key_order = []
-        self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
-        unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
-        cost_table = flat_x/(2*ARGS.sigma)
+        cost_table = self.cluster_log_probs.transpose(0,1).flatten(1).transpose(0,1)
+        self.batch_assignments = torch.zeros_like(self.cluster_log_probs[:,0]).long()
+        unassigned_idxs = torch.ones_like(cost_table[:,0]).bool()
+        #cost_table = flat_x/(2*ARGS.sigma)
         if ARGS.imbalance > 0 and self.epoch_num > 0:
             cost_table -= self.translated_log_prior
         had_repeats = False
         if not self.training and not ARGS.constrained_eval:
-            self.batch_assignments = self.cluster_dists.argmin(axis=1)
+            self.batch_assignments = self.cluster_log_probs.argmin(axis=1)
             return
         assign_iter = 0
         while unassigned_idxs.any():
@@ -300,19 +306,26 @@ class ClusterNet(nn.Module):
         print('lin:',lin_acc)
 
 
-
     def test_epoch_unsupervised(self,testloader):
         self.eval()
         preds = []
-        for i,data in enumerate(testloader):
-            images, labels = data
-            self(images.cuda())
-            preds.append(self.batch_assignments.detach().cpu().numpy())
+        data_for_clusters = [[] for _ in range(self.nc)]
+        for images,labels in testloader:
+            feature_vecs = self(images.cuda())
+            assignments =self.batch_assignments
+            for cluster_idx in range(self.nc):
+                data_for_clusters[cluster_idx].append(feature_vecs[assignments==cluster_idx])
+            preds.append(assignments.detach().cpu().numpy())
         pred_array = np.concatenate(preds)
         num_of_each_label = label_counts(pred_array)
         self.epoch_hard_counts = np.zeros(self.nc)
         for ass,num in num_of_each_label.items():
             self.epoch_hard_counts[ass] = num
+        if ARGS.estimate_covars and len(num_of_each_label) == self.nc: # don't set covars if some dpoints missing
+            unnormed_inv_covars = torch.stack([torch.inverse(torch.cat(cd).T.cov()) for cd in data_for_clusters])
+            self.inv_covars = (unnormed_inv_covars*self.inv_covars.mean()/unnormed_inv_covars.mean()).double()
+            if unnormed_inv_covars.isnan().any():
+                breakpoint()
         self.epoch_soft_counts = self.total_soft_counts.detach().cpu().numpy()
         self.gt = testloader.dataset.targets
         self.trans_dict = get_trans_dict(np.array(self.gt),pred_array)
@@ -347,7 +360,6 @@ def sinkhorn(scores, eps=0.05, niters=3):
 
 if __name__ == '__main__':
     ARGS,dataset = cl_args.get_cl_args_and_dset()
-
     ARGS.exp_dir = set_experiment_dir(f'experiments/{ARGS.expname}',name_of_trials='experiments/tmp',overwrite=ARGS.overwrite)
     start_time = time()
     cluster_net = ClusterNet(ARGS).cuda()
