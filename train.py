@@ -1,8 +1,12 @@
 from time import time
+import torch.nn.functional as F
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
 from os.path import join
 from dl_utils.label_funcs import label_counts, get_trans_dict, accuracy
-from dl_utils.tensor_funcs import cudify
+from dl_utils.tensor_funcs import cudify, numpyify
 from dl_utils.misc import set_experiment_dir, asMinutes
+from dl_utils.torch_misc import CifarLikeDataset
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -137,7 +141,7 @@ class ClusterNet(nn.Module):
         with torch.no_grad():
             soft_assignments = sinkhorn(-self.cluster_dists,eps=.5,niters=15)
         if self.prior != 'uniform' and self.epoch_num>0 and ARGS.help_sinkhorn:
-            soft_assignments *= torch.tensor(self.prior).cuda().exp()
+            soft_assignments *= torch.tensor(self.translated_prior).cuda().exp()
         self.batch_assignments = soft_assignments.argmin(axis=1)
         self.soft_counts = soft_assignments.sum(axis=0).detach()
         if ARGS.soft_train:
@@ -169,7 +173,7 @@ class ClusterNet(nn.Module):
         self.batch_assignments = torch.zeros_like(self.cluster_dists[:,0]).long()
         unassigned_idxs = torch.ones_like(flat_x[:,0]).bool()
         cost_table = flat_x/(2*ARGS.sigma)
-        if self.prior != 'uniform' and self.epoch_num > 0:
+        if ARGS.imbalance > 0 and self.epoch_num > 0:
             cost_table -= self.translated_log_prior
         had_repeats = False
         if not self.training and not ARGS.constrained_eval:
@@ -222,10 +226,10 @@ class ClusterNet(nn.Module):
     def train_epochs(self,num_epochs,dset,val_too=True):
         trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
         testloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
-        best_acc = 0
-        best_nmi = 0
-        best_ari = 0
-        best_kl_star = 0
+        best_acc = -1
+        best_nmi = -1
+        best_ari = -1
+        best_kl_star = -1
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
@@ -255,6 +259,47 @@ class ClusterNet(nn.Module):
             for a in ['batch_size_train','nz','hidden_dim','lr','sigma']:
                 f.write(f'{a}: {getattr(ARGS,a)}\n')
             f.write(f'warm_start: {ARGS.warm_start}\n')
+
+    def train_test_linear_probe(self,dset):
+        self.eval()
+        dloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
+        all_encodings = []
+        for i,data in enumerate(dloader):
+            images, labels = data
+            encodings = numpyify(self.net(images.cuda()))
+            all_encodings.append(encodings)
+        X = np.concatenate(all_encodings)
+        y = dset.targets
+        X_tr,X_ts,y_tr,y_ts = train_test_split(X,y,test_size=0.33)
+        reg = LogisticRegression().fit(X_tr,y_tr)
+        test_preds = reg.predict(X_ts)
+        print('linear on ts:',(test_preds==y_ts).mean())
+        print('linear on tr:',(reg.predict(X_tr)==y_tr).mean())
+        new_tr_dset = CifarLikeDataset(X_tr,y_tr)
+        new_ts_dset = CifarLikeDataset(X_ts,y_ts)
+        new_tr_dloader = DataLoader(new_tr_dset,batch_size=self.bs_val,shuffle=True,num_workers=8)
+        new_ts_dloader = DataLoader(new_ts_dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
+        def _inner_train(net):
+            opt = torch.optim.Adam(net.parameters())
+            for xb,yb in new_tr_dloader:
+                pred = mlp(xb.cuda())
+                loss = F.cross_entropy(pred,yb.cuda())
+                loss.backward()
+                opt.step(); opt.zero_grad()
+            all_preds = []
+            for xb,yb in new_ts_dloader:
+                pred = mlp(xb.cuda())
+                all_preds.append(numpyify(pred.argmax(axis=1)))
+            pred_array = np.concatenate(all_preds)
+            return (pred_array==y_ts).mean()
+        mlp = nn.Sequential(nn.Linear(self.nz,256),nn.ReLU(),nn.Linear(256,self.nc)).cuda()
+        mlp_acc = _inner_train(mlp)
+        print('mlp:',mlp_acc)
+        linear_model = nn.Linear(self.nz,self.nc).cuda()
+        lin_acc = _inner_train(linear_model)
+        print('lin:',lin_acc)
+
+
 
     def test_epoch_unsupervised(self,testloader):
         self.eval()
@@ -307,4 +352,6 @@ if __name__ == '__main__':
     start_time = time()
     cluster_net = ClusterNet(ARGS).cuda()
     cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
+    if ARGS.linear_probe:
+        cluster_net.train_test_linear_probe(dataset)
     print(f'Total time: {asMinutes(time()-start_time)}')

@@ -35,6 +35,7 @@ def get_cl_args():
     parser.add_argument('--overwrite',action='store_true')
     parser.add_argument('--suppress_prints',action='store_true')
     parser.add_argument('--help_sinkhorn',action='store_true')
+    parser.add_argument('--linear_probe',action='store_true')
     parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
     parser.add_argument('--imbalance',type=int,default=0)
     parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc'],default='simp')
