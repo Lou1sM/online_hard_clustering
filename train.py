@@ -145,7 +145,8 @@ class ClusterNet(nn.Module):
 
     def assign_batch_sinkhorn(self):
         with torch.no_grad():
-            soft_assignments = sinkhorn(-self.cluster_log_probs,eps=.5,niters=15)
+            #hard_counts = (torch.arange(self.nc).cuda() == self.cluster_log_probs.argmax(axis=1,keepdims=True)).float()
+            soft_assignments = sinkhorn(-self.cluster_log_probs,is_hard_reg=ARGS.hard_sinkhorn,eps=.5,niters=15)
         if self.prior != 'uniform' and self.epoch_num>0 and ARGS.help_sinkhorn:
             soft_assignments *= torch.tensor(self.translated_prior).cuda().exp()
         self.batch_assignments = soft_assignments.argmin(axis=1)
@@ -236,6 +237,7 @@ class ClusterNet(nn.Module):
         best_nmi = -1
         best_ari = -1
         best_kl_star = -1
+        best_linear_probe_acc = -1
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
@@ -259,7 +261,10 @@ class ClusterNet(nn.Module):
                 else:
                     with torch.no_grad():
                         self.test_epoch_unsupervised(testloader)
-        print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star}")
+                linear_probe_acc = self.train_test_linear_probe(dset)
+                if linear_probe_acc > best_linear_probe_acc:
+                    best_linear_probe_acc = linear_probe_acc
+        print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star}\tBest linear probe acc:{best_linear_probe_acc}")
         with open(join(ARGS.exp_dir,'ARGS.txt'),'w') as f:
             f.write(f'Dataset: {ARGS.dataset}\n')
             for a in ['batch_size_train','nz','hidden_dim','lr','sigma']:
@@ -279,32 +284,9 @@ class ClusterNet(nn.Module):
         X_tr,X_ts,y_tr,y_ts = train_test_split(X,y,test_size=0.33)
         reg = LogisticRegression().fit(X_tr,y_tr)
         test_preds = reg.predict(X_ts)
-        print('linear on ts:',(test_preds==y_ts).mean())
-        print('linear on tr:',(reg.predict(X_tr)==y_tr).mean())
-        new_tr_dset = CifarLikeDataset(X_tr,y_tr)
-        new_ts_dset = CifarLikeDataset(X_ts,y_ts)
-        new_tr_dloader = DataLoader(new_tr_dset,batch_size=self.bs_val,shuffle=True,num_workers=8)
-        new_ts_dloader = DataLoader(new_ts_dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
-        def _inner_train(net):
-            opt = torch.optim.Adam(net.parameters())
-            for xb,yb in new_tr_dloader:
-                pred = mlp(xb.cuda())
-                loss = F.cross_entropy(pred,yb.cuda())
-                loss.backward()
-                opt.step(); opt.zero_grad()
-            all_preds = []
-            for xb,yb in new_ts_dloader:
-                pred = mlp(xb.cuda())
-                all_preds.append(numpyify(pred.argmax(axis=1)))
-            pred_array = np.concatenate(all_preds)
-            return (pred_array==y_ts).mean()
-        mlp = nn.Sequential(nn.Linear(self.nz,256),nn.ReLU(),nn.Linear(256,self.nc)).cuda()
-        mlp_acc = _inner_train(mlp)
-        print('mlp:',mlp_acc)
-        linear_model = nn.Linear(self.nz,self.nc).cuda()
-        lin_acc = _inner_train(linear_model)
-        print('lin:',lin_acc)
-
+        test_acc = (test_preds==y_ts).mean()
+        print('linear on ts:',test_acc)
+        return test_acc
 
     def test_epoch_unsupervised(self,testloader):
         self.eval()
@@ -347,15 +329,22 @@ def neural_gas_loss(v,temp):
     assert (sorted_v**2 * weightings).mean() < ((sorted_v**2).mean() * weightings.mean())
     return (sorted_v**2 * weightings).sum(axis=1), assignments_order[:,0]
 
-def sinkhorn(scores, eps=0.05, niters=3):
+def sinkhorn(scores, is_hard_reg=False, eps=0.05, niters=3):
+
     Q = torch.exp(scores / eps).T
+    #Q = torch.softmax(scores / eps,1).T
     Q /= sum(Q)
+    if is_hard_reg:
+        hard_counts = (torch.arange(Q.shape[0]).cuda()[:,None] == Q.argmax(axis=0)).float()
+        Q = torch.cat([Q,0.1*hard_counts.sum(axis=1,keepdims=True)],axis=1)
     K, B = Q.shape
     r, c = torch.ones(K,device=Q.device) / K, torch.ones(B,device=Q.device) / B
     for _ in range(niters):
         u = torch.sum(Q, dim=1)
         Q *= (r / u).unsqueeze(1)
         Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
+    if is_hard_reg:
+        Q = Q[:,:-1]
     return (Q / torch.sum(Q, dim=0, keepdim=True)).T
 
 if __name__ == '__main__':
