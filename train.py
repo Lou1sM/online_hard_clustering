@@ -2,6 +2,7 @@ from time import time
 import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
 from os.path import join
 from dl_utils.label_funcs import label_counts, get_trans_dict, accuracy
 from dl_utils.tensor_funcs import cudify, numpyify
@@ -238,6 +239,7 @@ class ClusterNet(nn.Module):
         best_ari = -1
         best_kl_star = -1
         best_linear_probe_acc = -1
+        best_knn_probe_acc = -1
         if ARGS.warm_start:
             self.init_keys_as_dpoints(trainloader)
         for epoch_num in range(num_epochs):
@@ -256,22 +258,24 @@ class ClusterNet(nn.Module):
                     best_acc = self.acc
                     best_ari = self.ari
                     best_kl_star = self.kl_star
-                    with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
-                        f.write(f'{self.acc=:.3f}\n{self.nmi=:.3f}\n{self.ari=:.3f}\n')
                 else:
                     with torch.no_grad():
                         self.test_epoch_unsupervised(testloader)
-                linear_probe_acc = self.train_test_linear_probe(dset)
+                linear_probe_acc, knn_probe_acc = self.train_test_probes(dset)
                 if linear_probe_acc > best_linear_probe_acc:
                     best_linear_probe_acc = linear_probe_acc
-        print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star}\tBest linear probe acc:{best_linear_probe_acc}")
+                    best_knn_probe_acc = knn_probe_acc
+        print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star:.5f}\tBest linear probe acc:{best_linear_probe_acc:.3f}\tBest knn probe acc:{best_knn_probe_acc:.3f}")
         with open(join(ARGS.exp_dir,'ARGS.txt'),'w') as f:
             f.write(f'Dataset: {ARGS.dataset}\n')
             for a in ['batch_size_train','nz','hidden_dim','lr','sigma']:
                 f.write(f'{a}: {getattr(ARGS,a)}\n')
             f.write(f'warm_start: {ARGS.warm_start}\n')
 
-    def train_test_linear_probe(self,dset):
+        with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
+            f.write(f'ACC: {best_acc:.3f}\nNMI: {best_nmi:.3f}\nARI: {best_ari:.3f}\n')
+            f.write(f'KL-star: {best_kl_star:.3f}\nLin-Acc: {best_linear_probe_acc:.3f}\nKNN-Acc: {best_knn_probe_acc:.3f}\n')
+    def train_test_probes(self,dset):
         self.eval()
         dloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
         all_encodings = []
@@ -282,11 +286,13 @@ class ClusterNet(nn.Module):
         X = np.concatenate(all_encodings)
         y = dset.targets
         X_tr,X_ts,y_tr,y_ts = train_test_split(X,y,test_size=0.33)
-        reg = LogisticRegression().fit(X_tr,y_tr)
-        test_preds = reg.predict(X_ts)
-        test_acc = (test_preds==y_ts).mean()
-        print('linear on ts:',test_acc)
-        return test_acc
+        lin_reg = LogisticRegression().fit(X_tr,y_tr)
+        lin_test_preds = lin_reg.predict(X_ts)
+        lin_test_acc = (lin_test_preds==y_ts).mean()
+        knn_reg = KNeighborsClassifier(n_neighbors=3).fit(X_tr,y_tr)
+        knn_test_preds = knn_reg.predict(X_ts)
+        knn_test_acc = (knn_test_preds==y_ts).mean()
+        return lin_test_acc, knn_test_acc
 
     def test_epoch_unsupervised(self,testloader):
         self.eval()
@@ -353,6 +359,4 @@ if __name__ == '__main__':
     start_time = time()
     cluster_net = ClusterNet(ARGS).cuda()
     cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
-    if ARGS.linear_probe:
-        cluster_net.train_test_linear_probe(dataset)
     print(f'Total time: {asMinutes(time()-start_time)}')
