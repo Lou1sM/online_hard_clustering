@@ -75,7 +75,8 @@ class ClusterNet(nn.Module):
         self.opt = optim.Adam(self.net.parameters(),lr=ARGS.lr)
 
         self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
-        self.inv_covars = 1e-2*torch.eye(ARGS.nz,requires_grad=False,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
+        self.inv_covars = (1/ARGS.sigma)*torch.eye(ARGS.nz,requires_grad=False,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
+        print(self.inv_covars)
         #self.inv_covars = torch.randn(ARGS.nc,ARGS.nz,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=ARGS.lr)
         self.cluster_log_probs = None
@@ -275,6 +276,7 @@ class ClusterNet(nn.Module):
         with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
             f.write(f'ACC: {best_acc:.3f}\nNMI: {best_nmi:.3f}\nARI: {best_ari:.3f}\n')
             f.write(f'KL-star: {best_kl_star:.3f}\nLin-Acc: {best_linear_probe_acc:.3f}\nKNN-Acc: {best_knn_probe_acc:.3f}\n')
+
     def train_test_probes(self,dset):
         self.eval()
         dloader = DataLoader(dset,batch_size=self.bs_val,shuffle=False,num_workers=8)
@@ -289,7 +291,7 @@ class ClusterNet(nn.Module):
         lin_reg = LogisticRegression().fit(X_tr,y_tr)
         lin_test_preds = lin_reg.predict(X_ts)
         lin_test_acc = (lin_test_preds==y_ts).mean()
-        knn_reg = KNeighborsClassifier(n_neighbors=3).fit(X_tr,y_tr)
+        knn_reg = KNeighborsClassifier(n_neighbors=ARGS.n_neighbors).fit(X_tr,y_tr)
         knn_test_preds = knn_reg.predict(X_ts)
         knn_test_acc = (knn_test_preds==y_ts).mean()
         return lin_test_acc, knn_test_acc
