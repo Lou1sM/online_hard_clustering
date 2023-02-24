@@ -75,10 +75,11 @@ class ClusterNet(nn.Module):
         self.opt = optim.Adam(self.net.parameters(),lr=ARGS.lr)
 
         self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
-        self.inv_covars = (1/ARGS.sigma)*torch.eye(ARGS.nz,requires_grad=False,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
-        print(self.inv_covars)
+        self.inv_covars = (1/ARGS.sigma)*torch.eye(ARGS.nz,requires_grad=ARGS.is_train_covars,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
         #self.inv_covars = torch.randn(ARGS.nc,ARGS.nz,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=ARGS.lr)
+        if ARGS.is_train_covars:
+            self.ng_opt.add_param_group({'params':self.inv_covars})
         self.cluster_log_probs = None
         self.cluster_counts = torch.zeros(ARGS.nc,device='cuda').long()
         self.raw_counts = torch.zeros(ARGS.nc,device='cuda').long()
