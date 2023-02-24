@@ -48,6 +48,7 @@ def get_cl_args():
     parser.add_argument('--track_counts',action='store_true')
     parser.add_argument('--var_improved',action='store_true')
     parser.add_argument('--verbose',action='store_true')
+    parser.add_argument('--viz_clusters',action='store_true')
     parser.add_argument('--warm_start',action='store_true')
     parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stl','fashmnist','tweets','realdisp'],default='c10')
     parser.add_argument('-e','--epochs',type=int,default=1)
