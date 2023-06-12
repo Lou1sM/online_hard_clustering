@@ -7,6 +7,8 @@ import numpy as np
 from functools import partial
 from dl_utils.torch_misc import CifarLikeDataset
 from dl_utils.tensor_funcs import numpyify
+from HAR.make_dsets import make_realdisp_dset
+from HAR.project_config import realdisp_info
 
 
 def get_tweets(test_level):
@@ -58,12 +60,21 @@ def get_train_or_test_dset(dset_name,is_test):
         X,y = get_fashmnist(is_test)
     elif dset_name=='imt':
         X,y = get_imagenet_tiny(is_test)
+    else:
+        print(f'\nUNRECOGNIZED DATASET: {dset_name}\n')
     X = numpyify(X)
     y = numpyify(y)
     return X, y
 
 def get_dset(dset_name,test_level):
-    X, y = get_train_or_test_dset(dset_name,True)
+    if dset_name=='realdisp':
+        subj_ids = realdisp_info().possible_subj_ids
+        if test_level > 0:
+            subj_ids = subj_ids[:1]
+        dset,_ = make_realdisp_dset(step_size=5,window_size=512,subj_ids=subj_ids)
+        return dset
+    else:
+        X, y = get_train_or_test_dset(dset_name,True)
     if test_level==2:
         X = X[:1000]
         y = y[:1000]

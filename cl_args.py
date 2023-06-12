@@ -14,7 +14,8 @@ def get_cl_args():
     train_type_group.add_argument('--no_reg',action='store_true')
     train_type_group.add_argument('--no_cluster_loss',action='store_true')
     train_type_group.add_argument('--sinkhorn',action='store_true')
-    parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc'],default='simp')
+    parser.add_argument('--arch',type=str,choices=['alex','res','simp','fc','1dcnn'],default='simp')
+    parser.add_argument('--gpu',type=str,default='0')
     parser.add_argument('--batch_size_train',type=int,default=256)
     parser.add_argument('--batch_size_val',type=int,default=1024)
     parser.add_argument('--constrained_eval',action='store_true')
@@ -43,7 +44,7 @@ def get_cl_args():
     parser.add_argument('--var_improved',action='store_true')
     parser.add_argument('--verbose',action='store_true')
     parser.add_argument('--warm_start',action='store_true')
-    parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stl','fashmnist','tweets'],default='c10')
+    parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stl','fashmnist','tweets','realdisp'],default='c10')
     parser.add_argument('-e','--epochs',type=int,default=1)
     ARGS = parser.parse_args()
     if ARGS.test_level > 0:
@@ -76,11 +77,7 @@ def get_cl_args_and_dset():
         class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
 
     dataset = get_datasets.get_dset(args.dataset,args.test_level)
-    if args.dataset == 'fashmnist':
-        args.nc = 10
-    elif args.dataset == 'stl':
-        args.nc = 10
-    elif args.dataset == 'c100':
+    if args.dataset == 'c100':
         if args.imbalance>0:
             class_probs = np.tile(class_probs,10)
         args.nc = 100
@@ -91,6 +88,10 @@ def get_cl_args_and_dset():
     elif args.dataset == 'tweets':
         args.nc = 269
         args.arch = 'fc'
+    elif args.dataset == 'realdisp':
+        args.nc = 33
+        args.nz = 32
+        args.arch = '1dcnn'
     else:
         args.nc = 10
 

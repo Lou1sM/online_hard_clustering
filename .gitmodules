@@ -1,0 +1,3 @@
+[submodule "HAR"]
+	path = HAR
+	url = git@github.com:Lou1sM/HAR.git

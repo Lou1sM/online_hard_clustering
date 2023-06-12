@@ -1,4 +1,5 @@
 from time import time
+import os
 import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -17,6 +18,7 @@ from pdb import set_trace
 import numpy as np
 import torch
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
+from HAR.nets import EncByLayer
 
 
 class ClusterNet(nn.Module):
@@ -71,6 +73,13 @@ class ClusterNet(nn.Module):
                 nn.Linear(768,ARGS.hidden_dim),
                 nn.ReLU(),
                 nn.Linear(ARGS.hidden_dim,self.nz))
+        elif ARGS.arch == '1dcnn':
+            x_filters = (50,40,7,4)
+            x_strides = (2,2,1,1)
+            max_pools = ((2,1),(2,1),(2,1),(2,1))
+            y_filters = (1,1,1,117)
+            y_strides = (1,1,1,1)
+            self.net = nn.Sequential(EncByLayer(x_filters,y_filters,x_strides,y_strides,max_pools,False).cuda(),nn.Flatten())
 
         self.opt = optim.Adam(self.net.parameters(),lr=ARGS.lr)
 
@@ -277,6 +286,13 @@ class ClusterNet(nn.Module):
         with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
             f.write(f'ACC: {best_acc:.3f}\nNMI: {best_nmi:.3f}\nARI: {best_ari:.3f}\n')
             f.write(f'KL-star: {best_kl_star:.3f}\nLin-Acc: {best_linear_probe_acc:.3f}\nKNN-Acc: {best_knn_probe_acc:.3f}\n')
+            f.write(f'Imbalance: {ARGS.imbalance}')
+            if ARGS.sinkhorn:
+                f.write('sinkhorn')
+            if ARGS.kl:
+                f.write('kl')
+            if ARGS.var:
+                f.write('var')
 
     def train_test_probes(self,dset):
         self.eval()
@@ -359,6 +375,7 @@ def sinkhorn(scores, is_hard_reg=False, eps=0.05, niters=3):
 if __name__ == '__main__':
     ARGS,dataset = cl_args.get_cl_args_and_dset()
     ARGS.exp_dir = set_experiment_dir(f'experiments/{ARGS.expname}',name_of_trials='experiments/tmp',overwrite=ARGS.overwrite)
+    os.environ['CUDA_VISIBLE_DEVICES'] = ARGS.gpu
     start_time = time()
     cluster_net = ClusterNet(ARGS).cuda()
     cluster_net.train_epochs(ARGS.epochs,dataset,val_too=True)
