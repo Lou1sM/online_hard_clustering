@@ -11,30 +11,30 @@ from HAR.make_dsets import make_realdisp_dset
 from HAR.project_config import realdisp_info
 
 
-def get_tweets(test_level):
+def get_tweets(is_use_testset):
     X = np.load('datasets/tweets/roberta_doc_vecs.npy')
     y = np.load('datasets/tweets/cluster_labels.npy')
     return CifarLikeDataset(X,y)
 
-def get_cifar10(is_test):
+def get_cifar10(is_use_testset):
     transform = Compose([ToTensor(),Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
     data_dir = '~/dataset/cifar10_data'
-    dset = torchvision.datasets.CIFAR10(root=data_dir,train=not is_test,transform=transform,download=True)
+    dset = torchvision.datasets.CIFAR10(root=data_dir,train=not is_use_testset,transform=transform,download=True)
     return dset.data, dset.targets
 
-def get_cifar100(is_test):
+def get_cifar100(is_use_testset):
     transform = Compose([ToTensor(),Normalize((0.4914, 0.4822, 0.4465), (0.2675, 0.2565, 0.2761))])
     data_dir = '~/datasets/cifar100_data'
-    dset = torchvision.datasets.CIFAR100(root=data_dir,train=not is_test,transform=transform,download=True)
+    dset = torchvision.datasets.CIFAR100(root=data_dir,train=not is_use_testset,transform=transform,download=True)
     return dset.data, dset.targets
 
-def get_fashmnist(is_test):
+def get_fashmnist(is_use_testset):
     transform = Compose([ToTensor()])
     data_dir = '~/dataset/fashmnist_data'
-    dset = torchvision.datasets.FashionMNIST(root=data_dir,train=not is_test,transform=transform,download=True)
+    dset = torchvision.datasets.FashionMNIST(root=data_dir,train=not is_use_testset,transform=transform,download=True)
     return dset.data, dset.targets
 
-def get_stl(test_level):
+def get_stl(is_test_run):
     transform = Compose([ToTensor(),Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     data_dir = './dataset/stl_data'
     def wrapper(dset_func):
@@ -42,46 +42,42 @@ def get_stl(test_level):
             dset = dset_func()
             return CifarLikeDataset(np.transpose(dset.data,(0,3,2,1)),dset.labels,transform)
         return inner
-    if test_level == 0:
+    if is_test_run:
         dset = torchvision.datasets.STL10(root=data_dir,split='train',transform=transform,download=True)
     else:
         dset = torchvision.datasets.STL10(root=data_dir,split='test',transform=transform,download=True)
 
     return np.transpose(dset.data,(0,3,2,1)), dset.labels
 
-def get_train_or_test_dset(dset_name,is_test):
+def get_train_or_test_dset(dset_name,is_use_testset):
     if dset_name=='c10':
-        X,y = get_cifar10(is_test)
+        X,y = get_cifar10(is_use_testset)
     elif dset_name=='c100':
-        X,y = get_cifar100(is_test)
+        X,y = get_cifar100(is_use_testset)
     elif dset_name=='stl':
         X,y = get_stl(True)
     elif dset_name=='fashmnist':
-        X,y = get_fashmnist(is_test)
+        X,y = get_fashmnist(is_use_testset)
     elif dset_name=='imt':
-        X,y = get_imagenet_tiny(is_test)
+        X,y = get_imagenet_tiny(is_use_testset)
     else:
         print(f'\nUNRECOGNIZED DATASET: {dset_name}\n')
     X = numpyify(X)
     y = numpyify(y)
     return X, y
 
-def get_dset(dset_name,test_level):
+def get_dset(dset_name,is_test_run):
     if dset_name=='realdisp':
         subj_ids = realdisp_info().possible_subj_ids
-        if test_level > 0:
+        if is_test_run:
             subj_ids = subj_ids[:1]
         dset,_ = make_realdisp_dset(step_size=5,window_size=512,subj_ids=subj_ids)
         return dset
     else:
         X, y = get_train_or_test_dset(dset_name,True)
-    if test_level==2:
+    if is_test_run:
         X = X[:1000]
         y = y[:1000]
-    elif test_level==1:
-        rand_idxs = np.random.randint(len(X),size=(10000,))
-        X = X[rand_idxs]
-        y = y[rand_idxs]
     elif dset_name!='imt': # no train-test split in im-tiny
         X_tr, y_tr = get_train_or_test_dset(dset_name,False)
         X = np.concatenate([X_tr,X])

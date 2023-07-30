@@ -9,6 +9,7 @@ from dl_utils.label_funcs import label_counts, get_trans_dict, accuracy
 from dl_utils.tensor_funcs import cudify, numpyify
 from dl_utils.misc import set_experiment_dir, asMinutes
 from dl_utils.torch_misc import CifarLikeDataset
+from utils import build_convt_net
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -18,7 +19,8 @@ from pdb import set_trace
 import numpy as np
 import torch
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
-from HAR.nets import EncByLayer
+from HAR.nets import EncByLayer, DecByLayer
+from HAR import project_config
 
 
 class ClusterNet(nn.Module):
@@ -80,11 +82,26 @@ class ClusterNet(nn.Module):
             y_filters = (1,1,1,117)
             y_strides = (1,1,1,1)
             self.net = nn.Sequential(EncByLayer(x_filters,y_filters,x_strides,y_strides,max_pools,False).cuda(),nn.Flatten())
+        if ARGS.ckm:
+            if ARGS.arch == '1dcnn':
+                x_filters_trans = (15,10,15,11)
+                x_strides_trans = (2,3,3,3)
+                dset_info_object = project_config.realdisp_info()
+                y_filters_trans = (dset_info_object.num_channels,1,1,1)
+                self.dec = DecByLayer(x_filters_trans,y_filters_trans,x_strides_trans,y_strides,show_shapes=False).cuda()
+            else:
+                img_size = 96 if ARGS.dataset=='stl' else 28 if ARGS.dataset=='fashmnist' else 32
+                self.dec = build_convt_net(3,img_size,self.nz,3)
+
+            self.rec_lf = nn.MSELoss()
+            self.dec_opt = optim.Adam(self.dec.parameters(),lr=ARGS.lr)
 
         self.opt = optim.Adam(self.net.parameters(),lr=ARGS.lr)
 
-        self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
-        self.inv_covars = (1/ARGS.sigma)*torch.eye(ARGS.nz,requires_grad=ARGS.is_train_covars,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
+        #self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
+        self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda')
+        #self.inv_covars = (1/ARGS.sigma)*torch.eye(ARGS.nz,requires_grad=ARGS.is_train_covars,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
+        self.inv_covars = (1/ARGS.sigma)*torch.eye(ARGS.nz,requires_grad=ARGS.is_train_covars,device='cuda').repeat(self.nc,1,1)
         #self.inv_covars = torch.randn(ARGS.nc,ARGS.nz,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=ARGS.lr)
         if ARGS.is_train_covars:
@@ -115,21 +132,23 @@ class ClusterNet(nn.Module):
 
     def init_keys_as_dpoints(self,dloader):
         self.eval()
-        inp,targets = next(iter(dloader))
+        idloader = iter(dloader)
+        inp,targets = next(idloader)
         inp = inp[:self.nc]
         while len(inp) < self.nc:
-            new_inp,targets = next(iter(dloader))
+            new_inp,targets = next(idloader)
             inp = torch.cat([inp,new_inp[:self.nc-len(inp)]])
         sample_feature_vecs = self.net(inp.cuda())
-        self.centroids = sample_feature_vecs.clone().detach().double().requires_grad_(True)
+        #self.centroids = sample_feature_vecs.clone().detach().double().requires_grad_(True)
+        self.centroids = sample_feature_vecs.clone().detach().requires_grad_(True)
 
     def forward(self, inp):
         self.bs = inp.shape[0]
         feature_vecs = self.net(inp)
-        cluster_dists = feature_vecs[:,None]-self.centroids
-        self.cluster_log_probs = torch.einsum('bcu,czu,bcz->bc',cluster_dists,self.inv_covars,cluster_dists)
-        #assert torch.allclose(self.cluster_log_probs, cluster_dists.norm(dim=2)**2)
-        #assert all([torch.allclose(self.cluster_log_probs[b,c],(cluster_dists[b,c]@self.inv_covars[c]) @cluster_dists[b,c]) for b in range(self.bs) for c in range(self.nc)])
+        self.cluster_dists = feature_vecs[:,None]-self.centroids
+        self.cluster_log_probs = torch.einsum('bcu,czu,bcz->bc',self.cluster_dists,self.inv_covars,self.cluster_dists)
+        #assert torch.allclose(self.cluster_log_probs, self.cluster_dists.norm(dim=2)**2)
+        #assert all([torch.allclose(self.cluster_log_probs[b,c],(self.cluster_dists[b,c]@self.inv_covars[c]) @self.cluster_dists[b,c]) for b in range(self.bs) for c in range(self.nc)])
         self.assign_batch()
         return feature_vecs
 
@@ -142,7 +161,7 @@ class ClusterNet(nn.Module):
             self.assign_batch_kl()
         elif ARGS.sinkhorn:
             self.assign_batch_sinkhorn()
-        elif ARGS.no_reg:
+        elif ARGS.ckm or ARGS.no_reg:
             min_dists, self.batch_assignments = self.cluster_log_probs.min(axis=1)
             self.cluster_loss = min_dists.mean()
         else:
@@ -221,26 +240,50 @@ class ClusterNet(nn.Module):
         for i, data in enumerate(trainloader):
             if not ARGS.keep_scores:
                 self.reset_scores()
-            self.batch_inputs, self.batch_labels = data
+            xb, self.batch_labels = data
             if i==ARGS.db_at: set_trace()
-            self(self.batch_inputs.cuda())
-            self.cluster_loss.backward()
+            xb = xb.cuda()
+            self(xb)
+            if ARGS.ckm:
+                self.dec_loss(xb)
+                if self.epoch_num < ARGS.epochs*ARGS.pretrain_frac:
+                    self.cluster_loss = self.rec_loss
+                else:
+                    self.cluster_loss = 1e-7*self.cluster_loss + self.rec_loss
+            self.cluster_loss.backward(retain_graph=ARGS.ckm)
             self.opt.step()
             self.ng_opt.step()
             self.opt.zero_grad(); self.ng_opt.zero_grad()
-            if i % 10 == 0 and i > 0:
+            #if ARGS.ckm:
+                #self.dec_opt.zero_grad(); self.dec_opt.zero_grad()
+            #rec_loss.backward(); self.dec_opt.step(); self.dec_opt.zero_grad()
+            if (i+1) % 10 == 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.cluster_counts):
                         if (rc := self.raw_counts[k].item()) == 0:
                             continue
-                        print(f"{k} constrained: {v.item()}\traw: {self.raw_counts[k].item()}\tsoft: {self.soft_counts[k].item():.3f}")
+                        print(f"{k} constrained: {v.item()}\traw: {rc}\tsoft: {self.soft_counts[k].item():.3f}")
                 if not ARGS.suppress_prints:
                     print(f'batch index: {i}\tloss: {running_loss/10:.3f}')
                 running_loss = 0.0
             running_loss += self.cluster_loss.item()
             if (self.centroids==0).all(): set_trace()
-            if ARGS.test_level > 0:
+            if ARGS.is_test:
                 break
+
+    def dec_loss(self,xb):
+        soft_assignments = F.gumbel_softmax(self.cluster_log_probs,dim=1).detach()
+        to_decode = (soft_assignments @ self.centroids)[:,:,None,None]
+        rec = self.dec(to_decode)
+        #rec = self.dec(self.centroids[0].tile(256,1)[:,:,None,None])
+        rec_loss = self.rec_lf(xb,rec)
+        with torch.no_grad():
+            closest = self.centroids[soft_assignments.argmax(dim=1)]
+            rec_just_from_closest = self.dec(closest[:,:,None,None])
+            rec_loss_just_from_closest = self.rec_lf(rec_just_from_closest,xb)
+        self.rec_loss = rec_loss*rec_loss_just_from_closest.item()/rec_loss.item() # hackey straight-through trick
+        #print(rec_loss.item(),rec_loss_just_from_closest.item(),self.rec_loss.item())
+        #self.rec_loss = rec_loss
 
     def train_epochs(self,num_epochs,dset,val_too=True):
         trainloader = DataLoader(dset,batch_size=self.bs_train,shuffle=True,num_workers=8)
@@ -248,7 +291,7 @@ class ClusterNet(nn.Module):
         best_acc = -1
         best_nmi = -1
         best_ari = -1
-        best_kl_star = -1
+        best_hard_kl_star = -1
         best_linear_probe_acc = -1
         best_knn_probe_acc = -1
         if ARGS.warm_start:
@@ -261,14 +304,18 @@ class ClusterNet(nn.Module):
                 self.total_soft_counts = torch.zeros_like(self.total_soft_counts)
                 with torch.no_grad():
                     self.test_epoch_unsupervised(testloader)
-                model_distribution = self.epoch_hard_counts/self.epoch_hard_counts.sum()
-                log_quot = np.log((model_distribution/self.prior)+1e-8)
-                self.kl_star = np.dot(model_distribution,log_quot)
+                hard_model_distribution = self.epoch_hard_counts/self.epoch_hard_counts.sum()
+                log_quot = np.log((hard_model_distribution/self.prior)+1e-8)
+                self.hard_kl_star = np.dot(hard_model_distribution,log_quot)
+                soft_model_distribution = self.epoch_soft_counts/self.epoch_soft_counts.sum()
+                log_quot = np.log((soft_model_distribution/self.prior)+1e-8)
+                self.soft_kl_star = np.dot(soft_model_distribution,log_quot)
                 if self.nmi > best_nmi:
                     best_nmi = self.nmi
                     best_acc = self.acc
                     best_ari = self.ari
-                    best_kl_star = self.kl_star
+                    best_hard_kl_star = self.hard_kl_star
+                    best_soft_kl_star = self.soft_kl_star
                 else:
                     with torch.no_grad():
                         self.test_epoch_unsupervised(testloader)
@@ -276,16 +323,19 @@ class ClusterNet(nn.Module):
                 if linear_probe_acc > best_linear_probe_acc:
                     best_linear_probe_acc = linear_probe_acc
                     best_knn_probe_acc = knn_probe_acc
-        print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest KL*:{best_kl_star:.5f}\tBest linear probe acc:{best_linear_probe_acc:.3f}\tBest knn probe acc:{best_knn_probe_acc:.3f}")
+        print(f"Best Acc: {best_acc:.3f}\tBest NMI: {best_nmi:.3f}\tBest ARI: {best_ari:.3f}\tBest hard KL*:{best_hard_kl_star:.5f}\tBest soft KL*:{best_soft_kl_star:.5f}\tBest linear probe acc:{best_linear_probe_acc:.3f}\tBest knn probe acc:{best_knn_probe_acc:.3f}")
         with open(join(ARGS.exp_dir,'ARGS.txt'),'w') as f:
             f.write(f'Dataset: {ARGS.dataset}\n')
             for a in ['batch_size_train','nz','hidden_dim','lr','sigma']:
                 f.write(f'{a}: {getattr(ARGS,a)}\n')
             f.write(f'warm_start: {ARGS.warm_start}\n')
+            for m in ['sinkhorn','kl','var','ckm']:
+                if getattr(ARGS,m):
+                    f.write(m+'\n')
 
         with open(join(ARGS.exp_dir,'results.txt'),'w') as f:
             f.write(f'ACC: {best_acc:.3f}\nNMI: {best_nmi:.3f}\nARI: {best_ari:.3f}\n')
-            f.write(f'KL-star: {best_kl_star:.3f}\nLin-Acc: {best_linear_probe_acc:.3f}\nKNN-Acc: {best_knn_probe_acc:.3f}\n')
+            f.write(f'Hard KL-star: {best_hard_kl_star:.3f}\nSoft KL-star: {best_soft_kl_star:.3f}\nLin-Acc: {best_linear_probe_acc:.3f}\nKNN-Acc: {best_knn_probe_acc:.3f}\n')
             f.write(f'Imbalance: {ARGS.imbalance}')
             if ARGS.sinkhorn:
                 f.write('sinkhorn')
@@ -355,7 +405,6 @@ def neural_gas_loss(v,temp):
     return (sorted_v**2 * weightings).sum(axis=1), assignments_order[:,0]
 
 def sinkhorn(scores, is_hard_reg=False, eps=0.05, niters=3):
-
     Q = torch.exp(scores / eps).T
     #Q = torch.softmax(scores / eps,1).T
     Q /= sum(Q)

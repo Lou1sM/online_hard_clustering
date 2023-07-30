@@ -22,6 +22,7 @@ def get_cl_args():
     parser.add_argument('--db_at',type=int,default=-1)
     parser.add_argument('--estimate_covars',action='store_true')
     parser.add_argument('--expname',type=str,default='tmp')
+    parser.add_argument('--ckm',action='store_true')
     parser.add_argument('--hard_sinkhorn',action='store_true')
     parser.add_argument('--help_sinkhorn',action='store_true')
     parser.add_argument('--hidden_dim',type=int,default=512)
@@ -35,11 +36,12 @@ def get_cl_args():
     parser.add_argument('--nc',type=int,default=10)
     parser.add_argument('--nz',type=int,default=128)
     parser.add_argument('--overwrite',action='store_true')
+    parser.add_argument('--pretrain_frac',type=float,default=0.5)
     parser.add_argument('--sigma',type=float,default=100.)
     parser.add_argument('--soft_train',action='store_true')
     parser.add_argument('--suppress_prints',action='store_true')
     parser.add_argument('--temp',type=float,default=1.)
-    parser.add_argument('--test_level','-t',type=int,choices=[0,1,2],default=0)
+    parser.add_argument('--is_test','-t',action='store_true')
     parser.add_argument('--track_counts',action='store_true')
     parser.add_argument('--var_improved',action='store_true')
     parser.add_argument('--verbose',action='store_true')
@@ -47,7 +49,7 @@ def get_cl_args():
     parser.add_argument('-d','--dataset',type=str,choices=['imt','c10','c100','svhn','stl','fashmnist','tweets','realdisp'],default='c10')
     parser.add_argument('-e','--epochs',type=int,default=1)
     ARGS = parser.parse_args()
-    if ARGS.test_level > 0:
+    if ARGS.is_test > 0:
         ARGS.expname = 'tmp'
     return ARGS
 
@@ -76,7 +78,7 @@ def get_cl_args_and_dset():
     elif args.imbalance==3:
         class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
 
-    dataset = get_datasets.get_dset(args.dataset,args.test_level)
+    dataset = get_datasets.get_dset(args.dataset,args.is_test)
     if args.dataset == 'c100':
         if args.imbalance>0:
             class_probs = np.tile(class_probs,10)
