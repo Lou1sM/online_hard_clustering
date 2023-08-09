@@ -1,7 +1,10 @@
+import math
 import argparse
+import torch
 from dl_utils.torch_misc import CifarLikeDataset
 import numpy as np
 import get_datasets
+from HAR.make_dsets import StepDataset
 
 
 RELEVANT_ARGS = []
@@ -53,13 +56,19 @@ def get_cl_args():
         ARGS.expname = 'tmp'
     return ARGS
 
-def make_dset_imbalanced(dset,class_probs,nc):
+def make_dset_imbalanced(dset,nc,class_probs):
+    #if imbalance==1:
+    #    class_probs=np.array([1.0,1.0,1.0,1.0,1.0,1.0,0.95,0.9,0.85,0.8])
+    #elif imbalance==2:
+    #    class_probs=np.array([1.0,0.95,0.9,0.85,0.8,0.75,0.7,0.65,0.6,0.55])
+    #elif imbalance==3:
+    #    class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
     imbalanced_data = []
     imbalanced_targets = []
     for i,p in enumerate(class_probs):
         targets = np.array(dset.targets)
         label_mask = targets==i
-        rand_mask =np.random.rand(sum(label_mask))<p
+        rand_mask =np.random.rand(sum(label_mask))<p # select each independently, roughly get 1/p
         new_data = dset.data[label_mask][rand_mask]
         new_targets = targets[label_mask][rand_mask]
         imbalanced_data.append(new_data)
@@ -69,19 +78,49 @@ def make_dset_imbalanced(dset,class_probs,nc):
     assert len(imbalanced_data_arr) == len(imbalanced_targets_arr)
     return CifarLikeDataset(imbalanced_data_arr,imbalanced_targets_arr,transform=dset.transform)
 
+def make_dset_imbalanced_har(dset,nc,class_probs):
+    imb_data = []
+    imb_targets = []
+    for i,p in enumerate(class_probs):
+        targets = np.array(dset.targets)
+        orig_label_mask = targets==i
+        label_mask = np.tile(orig_label_mask,dset.step_size)
+        still_needed = len(dset.data)-len(label_mask) #in [0,step_size], depending on rounding
+        label_mask = np.concatenate([label_mask,label_mask[-still_needed:]])
+        data_for_this_label = dset.data[label_mask]
+        targets_for_this_label = dset.targets[orig_label_mask]
+        #idx = np.random.choice(n,size=int(n*p),replace=False)
+        #rand_mask =np.random.rand(sum(label_mask))<p # select each independently, roughly get 1/p
+        n_data = int(len(data_for_this_label)*p)
+        n_targets = math.ceil(len(targets_for_this_label)*p)
+        assert (n_data-dset.window_size)//dset.step_size + 1
+        new_data = data_for_this_label[:n_data]
+        new_targets = targets_for_this_label[:n_targets]
+        imb_data.append(new_data)
+        imb_targets.append(new_targets)
+    imb_data_tensor = torch.tensor(np.concatenate(imb_data))
+    imb_targets_tensor = torch.tensor(np.concatenate(imb_targets))
+    dset_len = (len(imb_data_tensor)-dset.window_size)//dset.step_size + 1
+    assert dset_len <= len(imb_targets_tensor)
+    imb_targets_tensor = imb_targets_tensor[:dset_len]
+    return StepDataset(imb_data_tensor,imb_targets_tensor,window_size=dset.window_size,step_size=dset.step_size)
+
 def get_cl_args_and_dset():
     args = get_cl_args()
-    if args.imbalance==1:
-        class_probs=np.array([1.0,1.0,1.0,1.0,1.0,1.0,0.95,0.9,0.85,0.8])
-    elif args.imbalance==2:
-        class_probs=np.array([1.0,0.95,0.9,0.85,0.8,0.75,0.7,0.65,0.6,0.55])
-    elif args.imbalance==3:
-        class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
 
     dataset = get_datasets.get_dset(args.dataset,args.is_test)
+    n_classes = len(set(dataset.targets))
+    if args.imbalance==1:
+        n = n_classes//2
+        m = n_classes - n
+        class_probs=np.concatenate([np.ones(m),1-0.2*np.linspace(0,1,n)])
+    elif args.imbalance==2:
+        class_probs = 1-0.5*np.linspace(0,1-1/n_classes,n_classes)
+    elif args.imbalance==3:
+        class_probs = 1-np.linspace(0,1-1/n_classes,n_classes)
     if args.dataset == 'c100':
-        if args.imbalance>0:
-            class_probs = np.tile(class_probs,10)
+        #if args.imbalance>0:
+            #class_probs = np.tile(class_probs,10)
         args.nc = 100
     elif args.dataset == 'imt':
         if args.imbalance>0:
@@ -97,8 +136,10 @@ def get_cl_args_and_dset():
     else:
         args.nc = 10
 
+    is_har = args.dataset == 'realdisp'
     if args.imbalance > 0:
-        dataset = make_dset_imbalanced(dataset,class_probs,args.nc)
+        imb_dset_func = make_dset_imbalanced_har if is_har else make_dset_imbalanced
+        dataset = imb_dset_func(dataset,args.nc,class_probs)
         args.prior = class_probs/class_probs.sum()
     else:
         args.prior = np.ones(args.nc)/args.nc

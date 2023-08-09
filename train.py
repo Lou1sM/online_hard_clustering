@@ -1,4 +1,5 @@
 from time import time
+import math
 import os
 import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
@@ -178,8 +179,8 @@ class ClusterNet(nn.Module):
         with torch.no_grad():
             #hard_counts = (torch.arange(self.nc).cuda() == self.cluster_log_probs.argmax(axis=1,keepdims=True)).float()
             soft_assignments = sinkhorn(-self.cluster_log_probs,is_hard_reg=ARGS.hard_sinkhorn,eps=.5,niters=15)
-        if self.prior != 'uniform' and self.epoch_num>0 and ARGS.help_sinkhorn:
-            soft_assignments *= torch.tensor(self.translated_prior).cuda().exp()
+        #if self.prior != 'uniform' and self.epoch_num>0 and ARGS.help_sinkhorn:
+            #soft_assignments *= torch.tensor(self.translated_prior).cuda().exp()
         self.batch_assignments = soft_assignments.argmin(axis=1)
         self.soft_counts = soft_assignments.sum(axis=0).detach()
         if ARGS.soft_train:
@@ -310,6 +311,8 @@ class ClusterNet(nn.Module):
                 soft_model_distribution = self.epoch_soft_counts/self.epoch_soft_counts.sum()
                 log_quot = np.log((soft_model_distribution/self.prior)+1e-8)
                 self.soft_kl_star = np.dot(soft_model_distribution,log_quot)
+                if math.isinf(self.soft_kl_star):
+                    breakpoint()
                 if self.nmi > best_nmi:
                     best_nmi = self.nmi
                     best_acc = self.acc
