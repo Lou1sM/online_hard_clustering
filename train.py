@@ -77,6 +77,7 @@ class ClusterNet(nn.Module):
 
         self.centroids = torch.randn(ARGS.nc,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
         self.inv_covars = (1/ARGS.sigma)*torch.eye(ARGS.nz,requires_grad=ARGS.is_train_covars,device='cuda',dtype=torch.double).repeat(self.nc,1,1)
+        self.half_log_det_inv_covars = torch.log(torch.tensor(ARGS.sigma))*self.nz/2
         #self.inv_covars = torch.randn(ARGS.nc,ARGS.nz,ARGS.nz,requires_grad=True,device='cuda',dtype=torch.double)
         self.ng_opt = optim.Adam([{'params':self.centroids}],lr=ARGS.lr)
         if ARGS.is_train_covars:
@@ -119,7 +120,7 @@ class ClusterNet(nn.Module):
         self.bs = inp.shape[0]
         feature_vecs = self.net(inp)
         cluster_dists = feature_vecs[:,None]-self.centroids
-        self.cluster_log_probs = torch.einsum('bcu,czu,bcz->bc',cluster_dists,self.inv_covars,cluster_dists)
+        self.cluster_log_probs = torch.einsum('bcu,czu,bcz->bc',cluster_dists,self.inv_covars,cluster_dists) - self.half_log_det_inv_covars
         #assert torch.allclose(self.cluster_log_probs, cluster_dists.norm(dim=2)**2)
         #assert all([torch.allclose(self.cluster_log_probs[b,c],(cluster_dists[b,c]@self.inv_covars[c]) @cluster_dists[b,c]) for b in range(self.bs) for c in range(self.nc)])
         self.assign_batch()
@@ -348,13 +349,14 @@ def neural_gas_loss(v,temp):
     return (sorted_v**2 * weightings).sum(axis=1), assignments_order[:,0]
 
 def sinkhorn(scores, is_hard_reg=False, eps=0.05, niters=3):
-
     Q = torch.exp(scores / eps).T
     #Q = torch.softmax(scores / eps,1).T
     Q /= sum(Q)
+    eps2 = 0.1
     if is_hard_reg:
         hard_counts = (torch.arange(Q.shape[0]).cuda()[:,None] == Q.argmax(axis=0)).float()
-        Q = torch.cat([Q,0.1*hard_counts.sum(axis=1,keepdims=True)],axis=1)
+        #Q = torch.cat([Q,1*hard_counts.sum(axis=1,keepdims=True)],axis=1)
+        Q = (Q + eps2*hard_counts) / (1+eps2)
     K, B = Q.shape
     r, c = torch.ones(K,device=Q.device) / K, torch.ones(B,device=Q.device) / B
     for _ in range(niters):
@@ -362,7 +364,8 @@ def sinkhorn(scores, is_hard_reg=False, eps=0.05, niters=3):
         Q *= (r / u).unsqueeze(1)
         Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
     if is_hard_reg:
-        Q = Q[:,:-1]
+        Q = (Q*2) - hard_counts
+        #Q = Q[:,:-1]
     return (Q / torch.sum(Q, dim=0, keepdim=True)).T
 
 if __name__ == '__main__':
