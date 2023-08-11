@@ -255,9 +255,6 @@ class ClusterNet(nn.Module):
             self.opt.step()
             self.ng_opt.step()
             self.opt.zero_grad(); self.ng_opt.zero_grad()
-            #if ARGS.ckm:
-                #self.dec_opt.zero_grad(); self.dec_opt.zero_grad()
-            #rec_loss.backward(); self.dec_opt.step(); self.dec_opt.zero_grad()
             if (i+1) % 10 == 0:
                 if ARGS.track_counts:
                     for k,v in enumerate(self.cluster_counts):

@@ -57,12 +57,6 @@ def get_cl_args():
     return ARGS
 
 def make_dset_imbalanced(dset,nc,class_probs):
-    #if imbalance==1:
-    #    class_probs=np.array([1.0,1.0,1.0,1.0,1.0,1.0,0.95,0.9,0.85,0.8])
-    #elif imbalance==2:
-    #    class_probs=np.array([1.0,0.95,0.9,0.85,0.8,0.75,0.7,0.65,0.6,0.55])
-    #elif imbalance==3:
-    #    class_probs=np.array([1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1])
     imbalanced_data = []
     imbalanced_targets = []
     for i,p in enumerate(class_probs):
@@ -83,32 +77,6 @@ def make_dset_imbalanced_har(dset,nc,class_probs):
     chunked_data = np.expand_dims(chunked_data,1)
     chunked_dset = CifarLikeDataset(chunked_data,dset.targets)
     return make_dset_imbalanced(chunked_dset,nc,class_probs)
-    #imb_data = []
-    #imb_targets = []
-    #import pdb; pdb.set_trace()  # XXX BREAKPOINT
-    #for i,p in enumerate(class_probs):
-    #    targets = np.array(dset.targets)
-    #    orig_label_mask = targets==i
-    #    label_mask = np.tile(orig_label_mask,dset.step_size)
-    #    still_needed = len(dset.data)-len(label_mask) #in [0,step_size], depending on rounding
-    #    label_mask = np.concatenate([label_mask,label_mask[-still_needed:]])
-    #    data_for_this_label = dset.data[label_mask]
-    #    targets_for_this_label = dset.targets[orig_label_mask]
-    #    #idx = np.random.choice(n,size=int(n*p),replace=False)
-    #    #rand_mask =np.random.rand(sum(label_mask))<p # select each independently, roughly get 1/p
-    #    n_data = int(len(data_for_this_label)*p)
-    #    n_targets = math.ceil(len(targets_for_this_label)*p)
-    #    assert (n_data-dset.window_size)//dset.step_size + 1
-    #    new_data = data_for_this_label[:n_data]
-    #    new_targets = targets_for_this_label[:n_targets]
-    #    imb_data.append(new_data)
-    #    imb_targets.append(new_targets)
-    #imb_data_tensor = torch.tensor(np.concatenate(imb_data))
-    #imb_targets_tensor = torch.tensor(np.concatenate(imb_targets))
-    #dset_len = (len(imb_data_tensor)-dset.window_size)//dset.step_size + 1
-    #assert dset_len <= len(imb_targets_tensor)
-    #imb_targets_tensor = imb_targets_tensor[:dset_len]
-    #return StepDataset(imb_data_tensor,imb_targets_tensor,window_size=dset.window_size,step_size=dset.step_size)
 
 def get_cl_args_and_dset():
     args = get_cl_args()
@@ -124,8 +92,6 @@ def get_cl_args_and_dset():
     elif args.imbalance==3:
         class_probs = 1-np.linspace(0,1-1/n_classes,n_classes)
     if args.dataset == 'c100':
-        #if args.imbalance>0:
-            #class_probs = np.tile(class_probs,10)
         args.nc = 100
     elif args.dataset == 'imt':
         if args.imbalance>0:

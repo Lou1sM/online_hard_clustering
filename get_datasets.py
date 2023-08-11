@@ -72,9 +72,6 @@ def get_dset(dset_name,is_test_run):
         if is_test_run:
             subj_ids = subj_ids[:1]
         dset,_ = make_realdisp_dset(step_size=5,window_size=512,subj_ids=subj_ids)
-        #big_realdisp_data = np.load('datasets/big_realdisp_X.npy')
-        #big_realdisp_targets = np.load('datasets/big_realdisp_y.npy')
-        #dset,_ = CifarLikeDataset(big_realdisp_data,big_realdisp_targets)
         return dset
     else:
         X, y = get_train_or_test_dset(dset_name,True)
