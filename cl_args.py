@@ -79,31 +79,36 @@ def make_dset_imbalanced(dset,nc,class_probs):
     return CifarLikeDataset(imbalanced_data_arr,imbalanced_targets_arr,transform=dset.transform)
 
 def make_dset_imbalanced_har(dset,nc,class_probs):
-    imb_data = []
-    imb_targets = []
-    for i,p in enumerate(class_probs):
-        targets = np.array(dset.targets)
-        orig_label_mask = targets==i
-        label_mask = np.tile(orig_label_mask,dset.step_size)
-        still_needed = len(dset.data)-len(label_mask) #in [0,step_size], depending on rounding
-        label_mask = np.concatenate([label_mask,label_mask[-still_needed:]])
-        data_for_this_label = dset.data[label_mask]
-        targets_for_this_label = dset.targets[orig_label_mask]
-        #idx = np.random.choice(n,size=int(n*p),replace=False)
-        #rand_mask =np.random.rand(sum(label_mask))<p # select each independently, roughly get 1/p
-        n_data = int(len(data_for_this_label)*p)
-        n_targets = math.ceil(len(targets_for_this_label)*p)
-        assert (n_data-dset.window_size)//dset.step_size + 1
-        new_data = data_for_this_label[:n_data]
-        new_targets = targets_for_this_label[:n_targets]
-        imb_data.append(new_data)
-        imb_targets.append(new_targets)
-    imb_data_tensor = torch.tensor(np.concatenate(imb_data))
-    imb_targets_tensor = torch.tensor(np.concatenate(imb_targets))
-    dset_len = (len(imb_data_tensor)-dset.window_size)//dset.step_size + 1
-    assert dset_len <= len(imb_targets_tensor)
-    imb_targets_tensor = imb_targets_tensor[:dset_len]
-    return StepDataset(imb_data_tensor,imb_targets_tensor,window_size=dset.window_size,step_size=dset.step_size)
+    chunked_data = np.stack([dset.data[dset.step_size*i:(dset.step_size*i)+dset.window_size] for i in range(len(dset.targets))])
+    chunked_data = np.expand_dims(chunked_data,1)
+    chunked_dset = CifarLikeDataset(chunked_data,dset.targets)
+    return make_dset_imbalanced(chunked_dset,nc,class_probs)
+    #imb_data = []
+    #imb_targets = []
+    #import pdb; pdb.set_trace()  # XXX BREAKPOINT
+    #for i,p in enumerate(class_probs):
+    #    targets = np.array(dset.targets)
+    #    orig_label_mask = targets==i
+    #    label_mask = np.tile(orig_label_mask,dset.step_size)
+    #    still_needed = len(dset.data)-len(label_mask) #in [0,step_size], depending on rounding
+    #    label_mask = np.concatenate([label_mask,label_mask[-still_needed:]])
+    #    data_for_this_label = dset.data[label_mask]
+    #    targets_for_this_label = dset.targets[orig_label_mask]
+    #    #idx = np.random.choice(n,size=int(n*p),replace=False)
+    #    #rand_mask =np.random.rand(sum(label_mask))<p # select each independently, roughly get 1/p
+    #    n_data = int(len(data_for_this_label)*p)
+    #    n_targets = math.ceil(len(targets_for_this_label)*p)
+    #    assert (n_data-dset.window_size)//dset.step_size + 1
+    #    new_data = data_for_this_label[:n_data]
+    #    new_targets = targets_for_this_label[:n_targets]
+    #    imb_data.append(new_data)
+    #    imb_targets.append(new_targets)
+    #imb_data_tensor = torch.tensor(np.concatenate(imb_data))
+    #imb_targets_tensor = torch.tensor(np.concatenate(imb_targets))
+    #dset_len = (len(imb_data_tensor)-dset.window_size)//dset.step_size + 1
+    #assert dset_len <= len(imb_targets_tensor)
+    #imb_targets_tensor = imb_targets_tensor[:dset_len]
+    #return StepDataset(imb_data_tensor,imb_targets_tensor,window_size=dset.window_size,step_size=dset.step_size)
 
 def get_cl_args_and_dset():
     args = get_cl_args()
