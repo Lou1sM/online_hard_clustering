@@ -1,5 +1,4 @@
 from time import time
-import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -232,7 +231,7 @@ class ClusterNet(nn.Module):
                 running_loss = 0.0
             running_loss += self.cluster_loss.item()
             if (self.centroids==0).all(): set_trace()
-            if ARGS.test_level > 0:
+            if ARGS.is_test > 0:
                 break
 
     def train_epochs(self,num_epochs,dset,val_too=True):
