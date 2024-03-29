@@ -17,6 +17,7 @@ from pdb import set_trace
 import numpy as np
 import torch
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
+from HAR.nets import EncByLayer
 
 
 class ClusterNet(nn.Module):
@@ -71,6 +72,13 @@ class ClusterNet(nn.Module):
                 nn.Linear(768,ARGS.hidden_dim),
                 nn.ReLU(),
                 nn.Linear(ARGS.hidden_dim,self.nz))
+        elif ARGS.arch == '1dcnn':
+            x_filters = (50,40,7,4)
+            x_strides = (2,2,1,1)
+            max_pools = ((2,1),(2,1),(2,1),(2,1))
+            y_filters = (1,1,1,117)
+            y_strides = (1,1,1,1)
+            self.net = nn.Sequential(EncByLayer(x_filters,y_filters,x_strides,y_strides,max_pools,False).cuda(),nn.Flatten())
 
         self.opt = optim.Adam(self.net.parameters(),lr=ARGS.lr)
 
